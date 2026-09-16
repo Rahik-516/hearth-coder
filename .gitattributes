@@ -1,0 +1,11 @@
+# Normalize to LF in the repository regardless of checkout platform. The primary dev
+# target is WSL2/Linux (docs/model-recommendations.md §0.3), and the edit engine itself
+# is line-ending-aware (docs/system-design.md §10.1) — mixed endings in the repo's own
+# source would be exactly the kind of bug that engine exists to avoid introducing.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.ico binary
+*.whl binary
+*.db binary

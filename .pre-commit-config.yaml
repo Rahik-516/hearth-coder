@@ -1,0 +1,61 @@
+# Pre-commit runs the same four checks as CI: ruff, mypy, lint-imports, pytest
+# (docs/implementation-roadmap.md, Phase 0 acceptance criteria).
+#
+# Local hooks run through `uv run` so every check uses the versions pinned in uv.lock
+# rather than a separately resolved pre-commit environment.
+default_install_hook_types: [pre-commit]
+fail_fast: false
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: check-added-large-files
+        args: [--maxkb=512]
+
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run ruff check --fix
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+      - id: mypy
+        name: mypy
+        entry: uv run mypy src/hearth
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true
+
+      - id: lint-imports
+        name: import-linter (layer contracts)
+        entry: uv run lint-imports
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true
+
+      - id: pytest
+        name: pytest (fast suite)
+        entry: uv run pytest
+        language: system
+        types: [python]
+        pass_filenames: false
+        require_serial: true

@@ -1,0 +1,30 @@
+[importlinter]
+root_package = hearth
+include_external_packages = True
+
+[importlinter:contract:layers]
+name = Layered architecture
+type = layers
+layers =
+    hearth.cli | hearth.server
+    hearth.workflows
+    hearth.core
+    hearth.tools
+    hearth.retrieval
+    hearth.indexing
+    hearth.safety
+    hearth.llm | hearth.storage | hearth.git
+    hearth.config
+    hearth.util
+
+[importlinter:contract:tools-no-llm]
+name = Tools never call models
+type = forbidden
+source_modules = hearth.tools
+forbidden_modules = hearth.llm
+
+[importlinter:contract:policy-pure]
+name = Policy engine has no I/O dependencies
+type = forbidden
+source_modules = hearth.safety.policy
+forbidden_modules = hearth.storage, hearth.llm, hearth.tools, hearth.git
