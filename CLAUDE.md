@@ -4,8 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Scaffolded, not implemented.** The package skeleton, tooling config and test harness are in place;
-`hearth --version` runs and the smoke tests pass. Every subpackage under `src/hearth/` is an empty
+**Scaffolded and verified, not implemented.** The package skeleton, tooling config and test harness are in
+place; `uv sync`, `pytest` (17 passed), `ruff check`, `mypy --strict` and `lint-imports` all run clean, and
+it's a git repo with the scaffold as the root commit. Every subpackage under `src/hearth/` is still an empty
 namespace waiting for its milestone.
 
 **Next: Phase 0 tasks 2–7** ([docs/implementation-roadmap.md](docs/implementation-roadmap.md)) — `config/`,
@@ -13,12 +14,14 @@ then `llm/` (types, `LLMProvider`, `OllamaProvider`, `ScriptedProvider`, profile
 and `core/bus.py`, then `hearth doctor`, then the first fixture repos. The roadmap carries a starter prompt
 and acceptance criteria for each.
 
-Two things are deliberately not done yet and are not oversights:
-- **`uv.lock` does not exist.** Run `uv sync` once, then convert the four `tree-sitter*` pins in
-  `pyproject.toml` from `>=` to `==` at the resolved versions — the grammar ABI is coupled to the runtime,
-  and a silent bump moves chunk boundaries ([docs/tech-stack.md](docs/tech-stack.md) §3.2).
-- **No git repository.** `git init` when git is available; `.gitignore` is already written, and note that
-  `uv.lock` is committed deliberately.
+**Toolchain lives under `E:\DevTools\`, one subdirectory per tool** — `uv\`, `Git\`, `Ollama\`, matching the
+existing convention. `uv`'s own Python installs and cache also live under `E:\DevTools\uv\python` and
+`...\cache` rather than the default `AppData\Roaming\uv\`, because that path sits next to this machine's
+OneDrive sync and broke uv's directory-junction creation for managed Python installs (confirmed: deleting
+the AppData cache and pointing `UV_PYTHON_INSTALL_DIR`/`UV_CACHE_DIR` at DevTools instead fixed it
+immediately). If `uv`/`git`/`ollama` aren't found as bare commands in a *new* terminal, the user-level PATH
+was updated but the current shell predates that change — open a fresh terminal, or use the full paths
+above.
 
 ## What Hearth is
 
