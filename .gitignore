@@ -30,3 +30,6 @@ wheelhouse/
 *.swp
 .DS_Store
 Thumbs.db
+
+# Assistant tooling scratch, not project content.
+.claude/
