@@ -40,7 +40,13 @@ dependencies = [
 
 [project.optional-dependencies]
 evals = ["pyyaml>=6"]                                                    # eval DATA only; import lazily
-langs-extra = ["tree-sitter-go", "tree-sitter-rust", "tree-sitter-java"] # Phase 2
+# Phase 2 grammars, exact-pinned for the same reason as the core ones above: a silent
+# bump moves chunk boundaries and invalidates every embedding built with the old one.
+langs-extra = [
+  "tree-sitter-go==0.25.0",
+  "tree-sitter-rust==0.24.2",
+  "tree-sitter-java==0.23.5",
+]
 server = ["fastapi", "uvicorn"]                                          # Phase 3 web UI
 
 [project.scripts]

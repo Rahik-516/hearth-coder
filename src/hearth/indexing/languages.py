@@ -16,6 +16,7 @@ FULL without a bundled grammar degrades to FALLBACK at runtime rather than faili
 from __future__ import annotations
 
 from enum import StrEnum
+from functools import lru_cache
 from pathlib import PurePosixPath
 
 
@@ -143,8 +144,45 @@ _SUPPORT: dict[str, SupportLevel] = {
     "just": SupportLevel.DATA,
 }
 
-#: Languages with a grammar wheel bundled in this build (docs/tech-stack.md §19.1).
-GRAMMAR_AVAILABLE: frozenset[str] = frozenset({"python", "typescript", "tsx", "javascript"})
+#: Language -> (module, factory attribute) for every grammar Hearth knows how to load.
+#: The single source of truth: ``parser.py`` loads through it, and availability is derived
+#: from it rather than tracked in a second list that can disagree.
+GRAMMAR_MODULES: dict[str, tuple[str, str]] = {
+    # Always installed (docs/tech-stack.md §19.1).
+    "python": ("tree_sitter_python", "language"),
+    "javascript": ("tree_sitter_javascript", "language"),
+    "typescript": ("tree_sitter_typescript", "language_typescript"),
+    "tsx": ("tree_sitter_typescript", "language_tsx"),
+    # The `langs-extra` extra. Absent in a default install, which is why availability is
+    # detected rather than declared.
+    "go": ("tree_sitter_go", "language"),
+    "rust": ("tree_sitter_rust", "language"),
+    "java": ("tree_sitter_java", "language"),
+}
+
+
+@lru_cache(maxsize=1)
+def grammar_available() -> frozenset[str]:
+    """Languages whose grammar wheel is installed in *this* environment.
+
+    Detected with ``find_spec`` rather than by importing: importing seven grammar modules
+    to answer "which are present" would cost startup time on every CLI path, and the
+    optional ones are absent in a default install, where the import would simply fail.
+
+    Cached, since the answer cannot change within a process.
+    """
+    from importlib.util import find_spec
+
+    present = set()
+    for language, (module, _) in GRAMMAR_MODULES.items():
+        try:
+            if find_spec(module) is not None:
+                present.add(language)
+        except (ImportError, ValueError):
+            # A broken or partially installed distribution is "not available", not a
+            # crash: the language degrades to the fallback chunker like any other.
+            continue
+    return frozenset(present)
 
 
 def detect_language(path: str, *, first_line: str | None = None) -> str | None:
@@ -206,14 +244,14 @@ def support_level(language: str | None) -> SupportLevel:
         return SupportLevel.FALLBACK
 
     level = _SUPPORT.get(language, SupportLevel.FALLBACK)
-    if level in (SupportLevel.FULL, SupportLevel.STRUCTURAL) and language not in GRAMMAR_AVAILABLE:
+    if level in (SupportLevel.FULL, SupportLevel.STRUCTURAL) and language not in grammar_available():
         return SupportLevel.FALLBACK
     return level
 
 
 def is_parseable(language: str | None) -> bool:
     """Whether tree-sitter can parse this language in this build."""
-    return language in GRAMMAR_AVAILABLE
+    return language in grammar_available()
 
 
 def known_languages() -> set[str]:

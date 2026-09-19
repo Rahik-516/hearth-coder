@@ -20,7 +20,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from hearth.indexing.languages import is_parseable
+from hearth.indexing.languages import GRAMMAR_MODULES, is_parseable
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from tree_sitter import Language, Node, Parser, Query, Tree
@@ -28,12 +28,9 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 _QUERIES_DIR = Path(__file__).parent / "queries"
 
 #: language id -> (module name, attribute holding the PyCapsule)
-_GRAMMAR_MODULES: dict[str, tuple[str, str]] = {
-    "python": ("tree_sitter_python", "language"),
-    "javascript": ("tree_sitter_javascript", "language"),
-    "typescript": ("tree_sitter_typescript", "language_typescript"),
-    "tsx": ("tree_sitter_typescript", "language_tsx"),
-}
+#: Re-exported from `languages`, which owns the map so availability detection and
+#: loading cannot disagree about which grammars exist.
+_GRAMMAR_MODULES = GRAMMAR_MODULES
 
 
 class ParserUnavailableError(RuntimeError):

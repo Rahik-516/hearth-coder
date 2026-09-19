@@ -81,9 +81,26 @@ def test_support_levels_match_the_mvp_scope() -> None:
 
 
 def test_languages_without_a_bundled_grammar_degrade() -> None:
-    """Go is FULL by design but has no grammar in this build, so it must not claim FULL."""
-    assert support_level("go") is SupportLevel.FALLBACK
-    assert is_parseable("go") is False
+    """A language cannot claim FULL or STRUCTURAL without a grammar to back it.
+
+    Asserted as an invariant over every declared language rather than by naming one.
+    This test used to name Go, which was correct until the I1 grammars landed and then
+    quietly became a test that a real capability was missing.
+    """
+    from hearth.indexing.languages import grammar_available, known_languages
+
+    for language in known_languages():
+        level = support_level(language)
+        if language not in grammar_available():
+            assert level is not SupportLevel.FULL, f"{language} claims FULL with no grammar"
+            assert level is not SupportLevel.STRUCTURAL, f"{language} claims STRUCTURAL with no grammar"
+            assert is_parseable(language) is False
+
+
+def test_a_structural_language_with_no_grammar_falls_back() -> None:
+    """Ruby is declared STRUCTURAL but ships no grammar in any install, extra included."""
+    assert support_level("ruby") is SupportLevel.FALLBACK
+    assert is_parseable("ruby") is False
 
 
 # --------------------------------------------------------------------- filters
