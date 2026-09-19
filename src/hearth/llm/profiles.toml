@@ -4,6 +4,7 @@
 [[profile]]
 family = "qwen3.5"
 match = ["qwen3.5", "qwen3"]
+tools = "native"
 tool_reliability = "high"
 supports_thinking = true
 preserve_thinking = false

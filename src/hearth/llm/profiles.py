@@ -43,6 +43,10 @@ class ModelProfile:
     """What Hearth assumes about one model family."""
 
     family: str
+    #: How the model emits tool calls: ``native`` (the API's own tool_calls field),
+    #: ``text_fallback`` (parsed out of the reply text) or ``none``
+    #: (docs/model-recommendations.md §6.1).
+    tools: str = "native"
     tool_reliability: str = "medium"
     supports_thinking: bool = False
     preserve_thinking: bool = False
@@ -82,6 +86,7 @@ class ProfileRegistry:
             )
             profile = ModelProfile(
                 family=entry["family"],
+                tools=entry.get("tools", "native"),
                 tool_reliability=entry.get("tool_reliability", "medium"),
                 supports_thinking=entry.get("supports_thinking", False),
                 preserve_thinking=entry.get("preserve_thinking", False),

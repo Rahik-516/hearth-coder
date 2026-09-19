@@ -70,8 +70,12 @@ class OllamaProvider:
             options["num_predict"] = request.num_predict
 
         messages = [_to_ollama_message(message) for message in request.messages]
-        think: Literal["low", "medium", "high"] | None = (
-            None if request.think == "off" else request.think
+        # `False`, not `None`: None leaves the decision to the server, and a thinking model
+        # then thinks by default. The observed failure is silence — the model spends its
+        # whole `num_predict` budget in `message.thinking` and returns empty content. "off"
+        # has to actively disable it.
+        think: Literal["low", "medium", "high"] | bool = (
+            False if request.think == "off" else request.think
         )
 
         try:
@@ -130,7 +134,7 @@ class OllamaProvider:
             family=getattr(details, "family", None),
             parameter_size=getattr(details, "parameter_size", None),
             quantization=getattr(details, "quantization_level", None),
-            context_length=None,
+            context_length=_context_length(info),
             capabilities=capabilities,
         )
 
@@ -176,6 +180,24 @@ class OllamaProvider:
         aclose = getattr(client, "aclose", None)
         if aclose is not None:
             await aclose()
+
+
+def _context_length(info: object) -> int | None:
+    """The model's trained context window, from the architecture-prefixed key.
+
+    Ollama reports it as ``<arch>.context_length`` — ``qwen35.context_length`` for this
+    model — so the key cannot be hardcoded and is found by suffix instead. Worth having:
+    it is how `hearth doctor` can tell the user that their configured ``num_ctx`` exceeds
+    what the model was trained for, which Ollama itself answers by silently truncating.
+    """
+    model_info = getattr(info, "modelinfo", None) or getattr(info, "model_info", None) or {}
+    if not isinstance(model_info, dict):
+        return None
+
+    for key, value in model_info.items():
+        if str(key).endswith(".context_length") and isinstance(value, int):
+            return value
+    return None
 
 
 def _to_ollama_message(message: object) -> dict[str, object]:

@@ -80,7 +80,20 @@ testpaths = ["tests"]
 # their own test suites. Collecting them from here fails on import — `billing` is only on
 # the path inside the fixture — and would make the plain `pytest` command unusable. The
 # task eval runs them deliberately, as a subprocess with the fixture as its cwd.
-norecursedirs = ["tests/fixtures/repos"]
+# Setting this *replaces* pytest's defaults, so they are restored explicitly — otherwise
+# .hypothesis and the build directories start being collected.
+norecursedirs = [
+  "tests/fixtures/repos",
+  "*.egg",
+  ".*",
+  "_darcs",
+  "build",
+  "CVS",
+  "dist",
+  "node_modules",
+  "venv",
+  "{arch}",
+]
 markers = [
   "live: requires a running local Ollama with qwen3.5:4b (run with: pytest -m live)",
   "slow: heavy tests (large synthetic indexes, benchmarks) — run deliberately on AC power",
