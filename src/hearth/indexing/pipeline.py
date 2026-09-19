@@ -46,6 +46,21 @@ from hearth.util.text import decode_text, is_probably_binary
 #: a cancelled run loses little work.
 DEFAULT_BATCH_SIZE = 64
 
+#: Identifies the *logic* that produced the stored chunks and symbols, as opposed to
+#: ``meta.schema_version``, which identifies the table layout.
+#:
+#: They are different problems. A migration handles a changed schema; nothing handles a
+#: changed chunker, because the schema is untouched and every file's bytes are identical,
+#: so change detection correctly sees no work to do — and the index keeps chunks the
+#: current code would never produce. Embeddings are keyed by chunk text, so stale
+#: boundaries mean stale vectors too.
+#:
+#: **Bump this whenever chunking, symbol extraction or the tag queries change.** A bump
+#: costs one full re-index; not bumping costs a silently wrong index that nothing reports.
+EXTRACTION_VERSION = 2
+
+_EXTRACTION_VERSION_KEY = "extraction_version"
+
 ProgressCallback = Callable[["IndexProgress"], None]
 
 
@@ -83,6 +98,9 @@ class IndexStats:
 
     skipped_by_reason: dict[str, int] = field(default_factory=dict)
     duration_s: float = 0.0
+    #: Set when the run re-indexed everything because the extraction logic changed,
+    #: as ``"<old> -> <new>"``. None on an ordinary run.
+    rebuilt_for_version: str | None = None
 
     @property
     def files_written(self) -> int:
@@ -128,6 +146,19 @@ class Indexer:
         stats.scanned = len(scan_result.files)
         stats.skipped_by_reason = dict(scan_result.skipped)
 
+        stored = self._repo.get_meta(_EXTRACTION_VERSION_KEY)
+        if stored != str(EXTRACTION_VERSION) and self._repo.count_files() > 0:
+            # A *missing* stamp counts as a mismatch, not as agreement: an index written
+            # before this key existed was produced by unknown logic, which is exactly the
+            # state the stamp exists to catch. Guarded on the index being non-empty so a
+            # first run on a fresh database is an ordinary index, not a "rebuild".
+            #
+            # Reported rather than silent: a full re-index is the visible cost of a
+            # correct one, and a user watching a long run deserves to know why this was
+            # not the no-op they expected.
+            stats.rebuilt_for_version = f"{stored or 'unstamped'} -> {EXTRACTION_VERSION}"
+            force = True
+
         changes = detect_changes(
             scan_result.files,
             self._repo.file_states(),
@@ -145,6 +176,7 @@ class Indexer:
         self._index_files(changes.needs_indexing, stats)
 
         self._repo.set_meta("root_path", self._root.as_posix())
+        self._repo.set_meta(_EXTRACTION_VERSION_KEY, str(EXTRACTION_VERSION))
         stats.duration_s = time.monotonic() - started
         self._emit("done", stats.files_written, stats.files_written)
         return stats

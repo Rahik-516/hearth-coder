@@ -209,6 +209,10 @@ def _print_index_summary(root: Path, stats: IndexStats) -> None:
     console.print(table)
 
     notes: list[str] = []
+    if stats.rebuilt_for_version:
+        notes.append(
+            f"rebuilt: chunking changed since this index was built ({stats.rebuilt_for_version})"
+        )
     if stats.skipped_by_reason.get("secret-file"):
         notes.append(f"{stats.skipped_by_reason['secret-file']} secret file(s) excluded")
     if stats.generated_metadata_only:

@@ -269,3 +269,80 @@ def test_installing_a_grammar_reindexes_the_files_it_unlocks(tmp_path: Path, mon
     again = pipeline.Indexer(root=workspace, repository=repo).run()
     assert again.parsed == 0
     assert again.modified == 0
+
+
+def test_a_changed_extraction_version_rebuilds_the_index(tmp_path: Path, monkeypatch) -> None:
+    """Changing how chunks are produced must not leave the old ones in place.
+
+    meta.schema_version covers the table layout, and a migration handles it. Nothing
+    covered the *logic*: the schema is untouched and every file's bytes are identical, so
+    change detection correctly sees no work — and the index keeps chunks the current code
+    would never produce. Embeddings are keyed by chunk text, so the vectors go stale too.
+    """
+    from hearth.indexing import pipeline
+
+    source = Path(__file__).resolve().parents[1] / "fixtures" / "repos" / "py_small"
+    workspace = tmp_path / "py_small"
+    shutil.copytree(source, workspace)
+    connection = connect(tmp_path / "index.db")
+    migrate(connection, database="index")
+    repo = IndexRepository(connection)
+
+    first = pipeline.Indexer(root=workspace, repository=repo).run()
+    assert first.rebuilt_for_version is None, "a first index is not a rebuild"
+
+    # An unchanged re-run is still a no-op — the M1 criterion.
+    assert pipeline.Indexer(root=workspace, repository=repo).run().parsed == 0
+
+    # Now the chunker changes, as it did when the I1 grammars landed.
+    monkeypatch.setattr(pipeline, "EXTRACTION_VERSION", pipeline.EXTRACTION_VERSION + 1)
+    bumped = pipeline.Indexer(root=workspace, repository=repo).run()
+
+    assert bumped.rebuilt_for_version is not None, "the bump must be reported, not silent"
+    assert bumped.parsed > 0, "every file must be re-extracted"
+    assert bumped.unchanged == 0
+
+    # And the new version is recorded, so it happens once rather than every run.
+    assert pipeline.Indexer(root=workspace, repository=repo).run().parsed == 0
+
+
+def test_an_index_with_no_version_stamp_is_rebuilt_once(tmp_path: Path) -> None:
+    """An index written before the stamp existed was built by unknown logic.
+
+    Treating a missing stamp as agreement would permanently exempt every index that
+    predates the check — the ones most likely to be stale.
+    """
+    from hearth.indexing import pipeline
+
+    source = Path(__file__).resolve().parents[1] / "fixtures" / "repos" / "py_small"
+    workspace = tmp_path / "py_small"
+    shutil.copytree(source, workspace)
+    connection = connect(tmp_path / "index.db")
+    migrate(connection, database="index")
+    repo = IndexRepository(connection)
+
+    pipeline.Indexer(root=workspace, repository=repo).run()
+    connection.execute("DELETE FROM meta WHERE key = ?", ("extraction_version",))
+
+    rebuilt = pipeline.Indexer(root=workspace, repository=repo).run()
+
+    assert rebuilt.rebuilt_for_version is not None
+    assert "unstamped" in rebuilt.rebuilt_for_version
+    assert rebuilt.parsed > 0
+    assert pipeline.Indexer(root=workspace, repository=repo).run().parsed == 0
+
+
+def test_a_first_index_is_not_reported_as_a_rebuild(tmp_path: Path) -> None:
+    """An empty database has no stale chunks, so calling it a rebuild would be noise."""
+    from hearth.indexing import pipeline
+
+    source = Path(__file__).resolve().parents[1] / "fixtures" / "repos" / "py_small"
+    workspace = tmp_path / "py_small"
+    shutil.copytree(source, workspace)
+    connection = connect(tmp_path / "index.db")
+    migrate(connection, database="index")
+
+    first = pipeline.Indexer(root=workspace, repository=IndexRepository(connection)).run()
+
+    assert first.rebuilt_for_version is None
+    assert first.added > 0
