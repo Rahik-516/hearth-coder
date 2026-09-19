@@ -8,12 +8,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 `lint-imports` all run clean under WSL2. Chat mode with RAG works; the safety spine, write tools,
 checkpoints, exec tools, git writes and agent turns are in.
 
-**M6 is not finished.** Landed: the command classifier, environment scrubbing, `SubprocessRunner`,
-`run_command`, `run_tests`, `git_add`/`git_commit`/`git_branch_create`/`git_switch`, `todo_write`,
-`prompts/system_tools.md` + `mode_agent.md`, `ChatRunner.run_agent_turn` and `/mode agent`.
-**Outstanding:** `hearth run "<task>"` with `--headless` and the `--allow-*` flags, batch review (§6.4),
-`evals/task_eval.py` and `docs/benchmarks/m6-task-eval.md`. The roadmap names batch review as the first
-thing to cut if behind schedule.
+**M6 is code-complete except batch review.** Landed: the command classifier, environment scrubbing,
+`SubprocessRunner`, `run_command`, `run_tests`, the four git write tools, `todo_write`,
+`prompts/system_tools.md` + `mode_agent.md`, `ChatRunner.run_agent_turn`, `/mode agent`,
+`hearth run` with headless fail-closed, and the task-eval harness.
+
+**Outstanding:** (1) **batch review** (§6.4) — needs a loop pre-pass that prepares every write in a
+multi-write step and one review screen; `cli/approval.batch_blockers` is already written and tested, and
+the roadmap names this the first thing to cut. (2) **Task-eval numbers** — the harness runs, but
+`GET /api/tags` returns `{"models":[]}`; pull `qwen3.5:4b` and record results in
+[docs/benchmarks/m6-task-eval.md](docs/benchmarks/m6-task-eval.md). (3) **No live end-to-end has ever
+run** — every test uses `ScriptedProvider`, so the loop has not met a real model since the rebuild.
 
 **One hard lesson, recorded because it cost the entire working tree.** A test in
 `tests/unit/tools/test_shell.py` once called `tool.prepare()` and `tool.execute()` directly — bypassing
