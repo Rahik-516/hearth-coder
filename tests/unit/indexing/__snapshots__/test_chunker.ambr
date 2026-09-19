@@ -1,0 +1,86 @@
+# serializer version: 1
+# name: test_chunk_boundaries_snapshot[py_small/README.md-markdown]
+  list([
+    'section          py_small                                     L1-4',
+    'section          Layout                                       L5-18',
+  ])
+# ---
+# name: test_chunk_boundaries_snapshot[py_small/src/billing/broken_syntax.py-python]
+  list([
+    'preamble         -                                            L1-17',
+  ])
+# ---
+# name: test_chunk_boundaries_snapshot[py_small/src/billing/invoice_service.py-python]
+  list([
+    'module_skeleton  -                                            L1-156',
+    'preamble         -                                            L1-27',
+    'function         audited                                      L30-50',
+    'class            InvoiceRepository                            L53-58',
+    'class            TaxPolicy                                    L61-62',
+    'class            FinalizationResult                           L65-72',
+    'class            InvoiceService                               L75-156',
+  ])
+# ---
+# name: test_chunk_boundaries_snapshot[py_small/src/billing/models.py-python]
+  list([
+    'module_skeleton  -                                            L1-87',
+    'preamble         -                                            L1-9',
+    'class            InvoiceStatus                                L12-16',
+    'class            Currency                                     L19-22',
+    'class            LineItem                                     L25-38',
+    'class            Customer                                     L41-46',
+    'class            Invoice                                      L49-87',
+  ])
+# ---
+# name: test_chunk_boundaries_snapshot[py_small/src/billing/reporting.py-python]
+  list([
+    'module_skeleton  -                                            L1-158',
+    'preamble         -                                            L1-16',
+    'class            StatementLine                                L19-25',
+    'class            MonthlyStatement                             L28-44',
+    'function         build_monthly_statement                      L47-135',
+    'function         format_statement                             L138-158',
+  ])
+# ---
+# name: test_chunk_boundaries_snapshot[ts_small/src/cart.ts-typescript]
+  list([
+    'module_skeleton  -                                            L1-78',
+    'preamble         -                                            L1-3',
+    'class            CartError                                    L5-13',
+    'preamble         ZERO                                         L15-15',
+    'preamble         -                                            L17-17',
+    'class            ShoppingCart                                 L18-68',
+    'function         round                                        L70-72',
+    'function         emptyTotals                                  L74-78',
+  ])
+# ---
+# name: test_chunk_boundaries_snapshot[ts_small/src/components/CartBadge.tsx-tsx]
+  list([
+    'module_skeleton  -                                            L1-17',
+    'preamble         -                                            L1-1',
+    'preamble         CartBadgeProps                               L3-6',
+    'function         CartBadge                                    L8-15',
+    'preamble         -                                            L17-17',
+  ])
+# ---
+# name: test_chunk_boundaries_snapshot[ts_small/src/index.js-javascript]
+  list([
+    'module_skeleton  -                                            L1-10',
+    'preamble         -                                            L1-1',
+    'preamble         -                                            L2-2',
+    'function         createCart                                   L4-6',
+    'preamble         DEFAULT_CURRENCY                             L8-8',
+    'preamble         -                                            L10-10',
+  ])
+# ---
+# name: test_chunk_boundaries_snapshot[ts_small/src/types.ts-typescript]
+  list([
+    'module_skeleton  -                                            L1-27',
+    'preamble         -                                            L1-1',
+    'preamble         Currency                                     L3-3',
+    'preamble         Money                                        L5-8',
+    'preamble         CartItem                                     L10-15',
+    'preamble         CartStatus                                   L17-21',
+    'preamble         CartTotals                                   L23-27',
+  ])
+# ---

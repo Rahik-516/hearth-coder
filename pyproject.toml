@@ -88,6 +88,10 @@ markers = [
 line-length = 110
 target-version = "py312"
 src = ["src", "tests"]
+# Fixture repos are indexing/exec targets, not Hearth's own code — some are deliberately
+# broken (tests/fixtures/repos/py_small/src/billing/broken_syntax.py exists to exercise
+# the parser's error handling) and none of them are held to Hearth's own style.
+extend-exclude = ["tests/fixtures/repos"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "ASYNC", "S", "PTH", "RUF"]
@@ -97,7 +101,14 @@ select = ["E", "F", "I", "B", "UP", "SIM", "ASYNC", "S", "PTH", "RUF"]
 # its single call site carries a justified per-line noqa. See docs/tech-stack.md §12.1.
 "src/hearth/safety/sandbox/*_runner.py" = ["S603", "S607"]
 "src/hearth/git/runner.py" = ["S603", "S607"]
-"tests/**" = ["S101"]
+# `typer.Option(...)` as an argument default is Typer's documented idiom, not the mutable-
+# default-argument footgun B008 exists to catch.
+"src/hearth/cli/*.py" = ["B008"]
+# Matching real pytest/jest/vitest terminal glyphs (×, ✓, ❯, ›) needs the literal characters.
+"src/hearth/tools/test_parsers/__init__.py" = ["RUF001", "RUF003"]
+# S108 fires on literal "/tmp/..." strings used as classifier/path-policy test fixtures —
+# nothing here actually touches a shared temp directory.
+"tests/**" = ["S101", "S108"]
 
 # ---------------------------------------------------------------------------
 # mypy

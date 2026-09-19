@@ -1,0 +1,28 @@
+# Bundled model profiles (docs/model-recommendations.md §6). Matched by family prefix
+# against the requested model tag; the first matching entry wins.
+
+[[profile]]
+family = "qwen3.5"
+match = ["qwen3.5", "qwen3"]
+tool_reliability = "high"
+supports_thinking = true
+preserve_thinking = false
+max_steps = { chat = 4, plan = 6, agent = 10 }
+size_rules = [ { max_params_b = 9, tool_reliability = "medium", max_steps_agent = 6 } ]
+
+[[profile]]
+family = "qwen3-embedding"
+match = ["qwen3-embedding"]
+tool_reliability = "high"
+supports_thinking = false
+is_embedding = true
+query_template = "Instruct: Given a code search query, retrieve relevant code\nQuery: {text}"
+document_template = "{text}"
+
+[[profile]]
+family = "default"
+match = ["*"]
+tool_reliability = "medium"
+supports_thinking = false
+preserve_thinking = false
+max_steps = { chat = 3, plan = 5, agent = 8 }

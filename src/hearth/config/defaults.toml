@@ -1,0 +1,43 @@
+# Hearth's bundled defaults. Every value here matches the Pydantic model defaults in
+# config/schema.py; the file exists so the layering in config/loader.py has a real base
+# layer to merge over, and so a value can be tuned here without touching a dataclass.
+
+[ollama]
+host = "http://127.0.0.1:11434"
+allow_remote_host = false
+min_version = "0.34.0"
+request_timeout_s = 300.0
+
+[models]
+tier = "tier1"
+chat = "qwen3.5:4b"
+embed = "qwen3-embedding:0.6b"
+embed_dimensions = 1024
+num_ctx = 12288
+keep_alive = "20m"
+embed_placement = "auto"
+
+[index]
+max_file_bytes = 1000000
+exclude = []
+include = []
+summaries = "off"
+
+[retrieval]
+rrf_k = 60
+rerank = false
+max_chunks_per_file = 3
+
+[retrieval.weights]
+dense = 1.0
+bm25 = 1.0
+symbol = 1.5
+path = 0.8
+
+[agent]
+default_mode = "chat"
+permission_level = "supervised"
+todo_tool = true
+
+[offline]
+enforce = false
