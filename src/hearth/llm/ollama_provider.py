@@ -95,11 +95,27 @@ class OllamaProvider:
             raise ProviderUnavailableError(f"chat stream failed: {exc}") from exc
 
     async def version(self) -> str:
+        """The server's version string, from ``/api/version``.
+
+        Reached through the SDK's own httpx client because the SDK wraps every endpoint
+        *except* this one, and the alternatives are worse: asking for the model list and
+        reading a ``version`` attribute off it returns None (it is not there), which is
+        what `hearth doctor` used to report as "version unknown" and then warn was below
+        the configured minimum. Using the client Hearth already holds keeps this on the
+        same loopback connection and adds no dependency.
+        """
+        transport = getattr(self._client, "_client", None)
+        if transport is None:  # pragma: no cover - the SDK always builds one
+            raise ProviderUnavailableError("the Ollama client exposes no HTTP transport")
+
         try:
-            info = await self._client.list()
-        except Exception as exc:
+            response = await transport.get("/api/version")
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as exc:  # network, decode and status failures alike
             raise ProviderUnavailableError(f"could not reach Ollama: {exc}") from exc
-        return getattr(info, "version", None) or "unknown"
+
+        return str(payload.get("version") or "unknown")
 
     async def show(self, model: str) -> ModelInfo:
         try:

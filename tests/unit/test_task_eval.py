@@ -55,6 +55,31 @@ def test_the_rename_task_starts_unsatisfied(tmp_path: Path) -> None:
     assert "compute_total" in detail or "appears nowhere" in detail
 
 
+def test_deleting_the_failing_test_does_not_count_as_fixing_it(tmp_path: Path) -> None:
+    """The obvious way to game this task: a green suite with the test removed."""
+    spec = next(task for task in TASKS if task.name == "fix-failing-test")
+    workspace = prepare_workspace(spec, repo_root=REPO_ROOT, destination=tmp_path / "copy")
+
+    (workspace / "tests" / "test_eval_rounding.py").unlink()
+
+    passed, detail = spec.check(workspace)
+    assert not passed
+    assert "deleted" in detail
+
+
+def test_editing_the_failing_test_does_not_count_either(tmp_path: Path) -> None:
+    spec = next(task for task in TASKS if task.name == "fix-failing-test")
+    workspace = prepare_workspace(spec, repo_root=REPO_ROOT, destination=tmp_path / "copy")
+
+    (workspace / "tests" / "test_eval_rounding.py").write_text(
+        "def test_rounds_half_up() -> None:\n    assert True\n", encoding="utf-8"
+    )
+
+    passed, detail = spec.check(workspace)
+    assert not passed
+    assert "edited" in detail
+
+
 def test_a_fixture_that_is_missing_is_an_error(tmp_path: Path) -> None:
     spec = TaskSpec(name="nope", fixture="does_not_exist", prompt="", check=lambda _: (True, ""))
 

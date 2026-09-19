@@ -76,6 +76,11 @@ packages = ["src/hearth"]
 addopts = "--disable-socket --allow-hosts=127.0.0.1,::1 -q -m \"not live and not slow\""
 asyncio_mode = "auto"
 testpaths = ["tests"]
+# Fixture repos are *target* repositories for Hearth to index and edit, and they carry
+# their own test suites. Collecting them from here fails on import — `billing` is only on
+# the path inside the fixture — and would make the plain `pytest` command unusable. The
+# task eval runs them deliberately, as a subprocess with the fixture as its cwd.
+norecursedirs = ["tests/fixtures/repos"]
 markers = [
   "live: requires a running local Ollama with qwen3.5:4b (run with: pytest -m live)",
   "slow: heavy tests (large synthetic indexes, benchmarks) — run deliberately on AC power",

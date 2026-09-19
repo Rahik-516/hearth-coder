@@ -46,13 +46,21 @@ def connect(path: Path | str, *, read_only: bool = False) -> sqlite3.Connection:
     that this handle must never migrate the schema or write a row.
     """
     path = Path(path)
+    # ``isolation_level=None`` turns off sqlite3's implicit transaction management, making
+    # the explicit BEGIN in :class:`transaction` the only one. Without it the driver opens
+    # its own transaction before a DML statement, and the next explicit BEGIN fails with
+    # "cannot start a transaction within a transaction" — which is invisible on a first
+    # index and breaks every re-index, since only then does a delete run before a batch.
     if read_only:
         connection = sqlite3.connect(
-            f"file:{path.as_posix()}?mode=ro", uri=True, check_same_thread=False
+            f"file:{path.as_posix()}?mode=ro",
+            uri=True,
+            check_same_thread=False,
+            isolation_level=None,
         )
     else:
         path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(str(path), check_same_thread=False)
+        connection = sqlite3.connect(str(path), check_same_thread=False, isolation_level=None)
     connection.row_factory = sqlite3.Row
     if not read_only:
         connection.execute("PRAGMA journal_mode = WAL")

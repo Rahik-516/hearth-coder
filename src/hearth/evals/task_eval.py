@@ -130,17 +130,38 @@ def _check_rename(root: Path) -> tuple[bool, str]:
     return _check_suite_green(root)
 
 
+#: The test seeded by `fix-failing-test`, kept as a constant so the scorer can prove it
+#: came back unchanged.
+SEEDED_TEST_PATH = "tests/test_eval_rounding.py"
+SEEDED_TEST = (
+    "from decimal import Decimal\n\n"
+    "from billing.invoice_service import round_half_up\n\n\n"
+    "def test_rounds_half_up() -> None:\n"
+    "    assert round_half_up(Decimal('1.005'), 2) == Decimal('1.01')\n"
+)
+
+
 def _break_rounding(root: Path) -> None:
     """Introduce the failing test the fix-a-failing-test task has to repair."""
-    target = root / "tests" / "test_eval_rounding.py"
+    target = root / SEEDED_TEST_PATH
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(
-        "from decimal import Decimal\n\n"
-        "from billing.invoice_service import round_half_up\n\n\n"
-        "def test_rounds_half_up() -> None:\n"
-        "    assert round_half_up(Decimal('1.005'), 2) == Decimal('1.01')\n",
-        encoding="utf-8",
-    )
+    target.write_text(SEEDED_TEST, encoding="utf-8")
+
+
+def _check_fixed_without_touching_the_test(root: Path) -> tuple[bool, str]:
+    """Green suite **and** the seeded test still byte-identical.
+
+    Without the second half the task is trivially gamed: deleting or rewriting the failing
+    test also turns the suite green, and the scorer would call that a pass. The prompt says
+    not to touch the test, but an eval that relies on the model obeying the prompt is
+    measuring the prompt, not the model — the check has to enforce it.
+    """
+    target = root / SEEDED_TEST_PATH
+    if not target.is_file():
+        return False, "the failing test was deleted rather than fixed"
+    if target.read_text(encoding="utf-8") != SEEDED_TEST:
+        return False, "the failing test was edited instead of the source"
+    return _check_suite_green(root)
 
 
 TASKS: tuple[TaskSpec, ...] = (
@@ -169,7 +190,7 @@ TASKS: tuple[TaskSpec, ...] = (
             "tests/test_eval_rounding.py is failing. Find out why and fix the source so "
             "it passes. Do not change the test."
         ),
-        check=_check_suite_green,
+        check=_check_fixed_without_touching_the_test,
         setup=_break_rounding,
     ),
 )
