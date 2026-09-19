@@ -47,11 +47,21 @@ the query loaded, the grammar imported, and parsing still returned `skipped`. Av
 derived from `GRAMMAR_MODULES` in `languages.py` via `find_spec`, which is also the single source of
 truth `parser.py` loads through.
 
-**Outstanding in I1:** structural support for C/C++/C#/Ruby/PHP (needs grammars none of the extras
-ship), and **structured chunking for large JSON/YAML/TOML** — the last item. Those languages are
-`DATA` level with no grammar, so they fall to the window chunker today. The awkward part is line
-numbers: `json` and `tomllib` do not report positions, and PyYAML is not a runtime dependency, so the
-split has to be textual — TOML on `[section]` headers, YAML on column-zero keys, JSON on brace depth.
+**Structured chunking for JSON/YAML/TOML is done**, which completes I1's listed work. Files past
+`STRUCTURED_MIN_TOKENS` split on their own structure — TOML table headers, YAML column-zero keys,
+JSON keys at brace depth 1 — rather than at arbitrary window boundaries. The split is textual on
+purpose: `json` and `tomllib` report no line numbers and PyYAML is not a runtime dependency (rule 7),
+so a parse would buy correctness the chunker cannot use, since every chunk needs a citable range.
+
+**The index records what built it.** `EXTRACTION_VERSION` in `pipeline.py` is stamped into `meta` and
+compared each run; a mismatch forces a full re-index and says so in the summary. **Bump it whenever
+chunking, symbol extraction or a tag query changes** — otherwise the index keeps chunks the current
+code would never produce, with embeddings keyed to them, and nothing reports it. A missing stamp
+counts as a mismatch, since an index written before the key existed has unknown provenance.
+
+**Outstanding in I1:** only structural support for C/C++/C#/Ruby/PHP, which needs grammars no extra
+currently ships. `hearth doctor` lists which languages have grammars and warns only when one is
+installable, so the gap is visible without being nagging.
 
 **Also outstanding:** (1) **batch review** (§6.4) — needs a loop pre-pass that prepares every write in a
 multi-write step and one review screen; `cli/approval.batch_blockers` is already written and tested,

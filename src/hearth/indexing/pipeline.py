@@ -57,7 +57,7 @@ DEFAULT_BATCH_SIZE = 64
 #:
 #: **Bump this whenever chunking, symbol extraction or the tag queries change.** A bump
 #: costs one full re-index; not bumping costs a silently wrong index that nothing reports.
-EXTRACTION_VERSION = 2
+EXTRACTION_VERSION = 3
 
 _EXTRACTION_VERSION_KEY = "extraction_version"
 
