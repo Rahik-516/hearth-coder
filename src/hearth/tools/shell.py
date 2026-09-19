@@ -89,7 +89,7 @@ class RunCommandTool(Tool[RunCommandArgs]):
 
         # PathError is deliberately not caught: a cwd outside the jail is an invariant
         # refusal, and the gateway audits it as one.
-        cwd = _resolve_cwd(context.workspace, args.cwd)
+        cwd = resolve_cwd(context.workspace, args.cwd)
         if not cwd.is_dir():
             target = args.cwd or "."
             return _refused(ErrorCode.NOT_FOUND, f"{target} is not a directory in the workspace")
@@ -163,7 +163,7 @@ def command_result(outcome: CommandOutcome, *, display: str) -> ToolResult:
     return result
 
 
-def _resolve_cwd(workspace: Path, user_path: str | None) -> Path:
+def resolve_cwd(workspace: Path, user_path: str | None) -> Path:
     """Resolve the working directory, which must be inside the workspace (§8.2).
 
     Containment is checked here rather than by asking for a *write* resolution, for two

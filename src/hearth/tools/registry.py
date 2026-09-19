@@ -175,13 +175,23 @@ def _truncate(selected: list[Tool[Any]], limit: int) -> list[Tool[Any]]:
     return [tool for tool in selected if id(tool) in kept]
 
 
-def build_default_registry() -> ToolRegistry:
+def build_default_registry(
+    *,
+    test_command: str | None = None,
+    test_command_source: str | None = None,
+) -> ToolRegistry:
     """Every tool Hearth currently has.
 
     Registration is not exposure: `for_mode` decides what a session actually sees, so
     `edit_file` being registered here does not make it reachable from chat mode.
 
     Imported lazily by callers so `hearth --version` does not pay for it.
+
+    Args:
+        test_command: The project's configured test command, if it set one. It is a
+            *value* here, not a permission — it is classified and approved exactly like a
+            command the model composed (docs/safety-and-tool-use.md §5.6).
+        test_command_source: Where that command came from, for the PROJECT-CONFIG badge.
     """
     from hearth.tools.git_read import GitDiffTool, GitLogTool, GitStatusTool
     from hearth.tools.read_fs import FindFilesTool, ListDirTool, ReadFileTool
@@ -192,6 +202,7 @@ def build_default_registry() -> ToolRegistry:
         SearchCodeTool,
     )
     from hearth.tools.shell import RunCommandTool
+    from hearth.tools.tests import RunTestsTool
     from hearth.tools.write_fs import EditFileTool, WriteFileTool
 
     return ToolRegistry(
@@ -209,5 +220,6 @@ def build_default_registry() -> ToolRegistry:
             EditFileTool(),
             WriteFileTool(),
             RunCommandTool(),
+            RunTestsTool(test_command=test_command, source=test_command_source),
         ]
     )
