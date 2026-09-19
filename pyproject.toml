@@ -107,8 +107,9 @@ select = ["E", "F", "I", "B", "UP", "SIM", "ASYNC", "S", "PTH", "RUF"]
 # Matching real pytest/jest/vitest terminal glyphs (×, ✓, ❯, ›) needs the literal characters.
 "src/hearth/tools/test_parsers/__init__.py" = ["RUF001", "RUF003"]
 # S108 fires on literal "/tmp/..." strings used as classifier/path-policy test fixtures —
-# nothing here actually touches a shared temp directory.
-"tests/**" = ["S101", "S108"]
+# nothing here actually touches a shared temp directory. S603/S607: test fixtures shell
+# out to `git` to build throwaway repositories under tmp_path, which is the point.
+"tests/**" = ["S101", "S108", "S603", "S607"]
 
 # ---------------------------------------------------------------------------
 # mypy

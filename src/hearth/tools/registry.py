@@ -194,6 +194,12 @@ def build_default_registry(
         test_command_source: Where that command came from, for the PROJECT-CONFIG badge.
     """
     from hearth.tools.git_read import GitDiffTool, GitLogTool, GitStatusTool
+    from hearth.tools.git_write import (
+        GitAddTool,
+        GitBranchCreateTool,
+        GitCommitTool,
+        GitSwitchTool,
+    )
     from hearth.tools.read_fs import FindFilesTool, ListDirTool, ReadFileTool
     from hearth.tools.search import (
         FindReferencesTool,
@@ -221,5 +227,9 @@ def build_default_registry(
             WriteFileTool(),
             RunCommandTool(),
             RunTestsTool(test_command=test_command, source=test_command_source),
+            GitAddTool(),
+            GitCommitTool(),
+            GitBranchCreateTool(),
+            GitSwitchTool(),
         ]
     )
