@@ -14,7 +14,7 @@ must perform **zero parses**, and the counters here are how that is verified.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 
 from hearth.indexing.scanner import ScannedFile
@@ -58,6 +58,7 @@ def detect_changes(
     indexed: dict[str, tuple[int, int, str]],
     *,
     force: bool = False,
+    recheck: Collection[str] = (),
 ) -> ChangeSet:
     """Compare a scan against the index.
 
@@ -65,9 +66,13 @@ def detect_changes(
         scanned: Files found on disk.
         indexed: ``path -> (size_bytes, mtime_ns, content_hash)`` from the index.
         force: Treat everything as modified, for ``--rebuild``.
+        recheck: Paths to re-index whatever their stat says, because what Hearth can
+            *extract* from them changed even though their bytes did not — installing a
+            language grammar is the case this exists for.
     """
     changes = ChangeSet()
     seen: set[str] = set()
+    to_recheck = set(recheck)
 
     for file in scanned:
         seen.add(file.relative_path)
@@ -77,7 +82,7 @@ def detect_changes(
             changes.added.append(file)
             continue
 
-        if force:
+        if force or file.relative_path in to_recheck:
             changes.modified.append(file)
             continue
 

@@ -128,6 +128,56 @@ def check_git() -> CheckResult:
     )
 
 
+#: Grammars a user can add by installing an extra, as opposed to ones Hearth does not
+#: ship at all. Only the former can turn this check into a warning.
+_INSTALLABLE_GRAMMARS = frozenset({"go", "rust", "java"})
+
+
+def check_grammars() -> CheckResult:
+    """Which languages can be parsed, and which silently fall back.
+
+    Worth its own line because the failure is invisible from the outside: a Go file with
+    no grammar is still indexed, still searchable, and still returns results — just as
+    sliding windows of text with no symbols, so `find_symbol` and the reference graph come
+    up empty for that language and nothing explains why.
+    """
+    from hearth.indexing.languages import (
+        SupportLevel,
+        declared_support_level,
+        grammar_available,
+        known_languages,
+    )
+
+    available = grammar_available()
+    # Only languages that *want* a grammar. Markdown and JSON are DOCUMENT and DATA by
+    # design, and listing them as missing would invent a problem.
+    wanted = {
+        language
+        for language in known_languages()
+        if declared_support_level(language) in (SupportLevel.FULL, SupportLevel.STRUCTURAL)
+    }
+    missing = sorted(wanted - available)
+
+    detail = f"{len(available)} available: {', '.join(sorted(available))}"
+    installable = sorted(_INSTALLABLE_GRAMMARS & set(missing))
+
+    # A warning the reader cannot act on is noise, and noise is how a report stops being
+    # read. Languages Hearth ships no grammar for are a known limitation, stated in the
+    # detail line; only a grammar the user could install by running one command warrants
+    # raising the status.
+    if not installable:
+        if missing:
+            detail += f" (no grammar ships for {', '.join(missing)}; indexed as plain text)"
+        return CheckResult("Language grammars", Status.PASS, detail)
+
+    return CheckResult(
+        "Language grammars",
+        Status.WARN,
+        f"{detail}; no symbols for {', '.join(installable)}",
+        fix=f"uv sync --extra langs-extra  (adds {', '.join(installable)})",
+    )
+
+
 def check_ripgrep() -> CheckResult:
     return check_external_tool(
         "rg",
@@ -445,6 +495,7 @@ async def run_doctor(
     report.add(check_sqlite_fts5())
     report.add(check_git())
     report.add(check_ripgrep())
+    report.add(check_grammars())
     report.add(check_workspace_location(workspace))
     report.add(check_wsl_networking(config.ollama.host))
 

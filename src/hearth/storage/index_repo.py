@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import ClassVar, TypedDict, cast
 
@@ -153,6 +153,25 @@ class IndexRepository:
         return {
             str(r["path"]): (int(r["size_bytes"]), int(r["mtime_ns"]), str(r["content_hash"])) for r in rows
         }
+
+    def paths_now_parseable(self, parseable: Collection[str]) -> set[str]:
+        """Indexed files that were skipped for want of a grammar that now exists.
+
+        Installing a language grammar changes what Hearth can extract from files whose
+        *contents* never changed, so change detection — which compares size, mtime and
+        hash — sees nothing to do. Without this the symbols for that language stay empty
+        until someone thinks to run `hearth index --rebuild`, and nothing suggests they
+        should.
+        """
+        if not parseable:
+            return set()
+
+        placeholders = ",".join("?" * len(parseable))
+        rows = self._connection.execute(
+            f"SELECT path FROM files WHERE parse_status = 'skipped' AND language IN ({placeholders})",  # noqa: S608 - placeholders only
+            tuple(parseable),
+        ).fetchall()
+        return {str(row["path"]) for row in rows}
 
     def count_files(self) -> int:
         return int(self._connection.execute("SELECT COUNT(*) FROM files").fetchone()[0])

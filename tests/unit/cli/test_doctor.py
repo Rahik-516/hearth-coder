@@ -268,3 +268,75 @@ async def test_a_chat_model_on_cpu_still_warns(loaded, tmp_path: Path, monkeypat
     results = await doc._check_loaded_models(provider, cpu_pinned=frozenset({"qwen3-embedding:0.6b"}))
 
     assert results[0].status is Status.WARN
+
+
+# ------------------------------------------------------------- language grammars
+
+
+def test_grammar_check_lists_what_is_available() -> None:
+    """A missing grammar is invisible from outside: the language still indexes, still
+    searches, and silently has no symbols. doctor is where that becomes visible."""
+    result = doc.check_grammars()
+
+    assert "python" in result.detail
+    assert result.status in (Status.PASS, Status.WARN)
+
+
+def test_languages_hearth_ships_no_grammar_for_do_not_warn(monkeypatch) -> None:
+    """A warning nobody can act on is noise, and noise is how a report stops being read.
+
+    C, Ruby and the rest have no grammar in any install, so they are stated in the detail
+    line and left at PASS. Only a grammar one `uv sync` away raises the status.
+    """
+    from hearth.indexing import languages
+
+    present = frozenset(
+        {"python", "typescript", "tsx", "javascript", "go", "rust", "java"}
+    )
+    monkeypatch.setattr(languages, "grammar_available", lambda: present)
+
+    result = doc.check_grammars()
+
+    assert result.status is Status.PASS
+    assert "ruby" in result.detail
+    assert result.fix is None
+
+
+def test_a_missing_optional_grammar_warns_with_the_install_command(monkeypatch) -> None:
+    monkeypatch.setattr(doc, "check_grammars", doc.check_grammars)
+    from hearth.indexing import languages
+
+    monkeypatch.setattr(languages, "grammar_available", lambda: frozenset({"python"}))
+
+    result = doc.check_grammars()
+
+    assert result.status is Status.WARN
+    assert "go" in result.detail
+    assert result.fix is not None
+    assert "langs-extra" in result.fix
+
+
+def test_document_and_data_languages_are_not_reported_missing(monkeypatch) -> None:
+    """Markdown has no grammar by design; listing it would invent a problem."""
+    from hearth.indexing import languages
+
+    monkeypatch.setattr(languages, "grammar_available", lambda: frozenset({"python"}))
+
+    result = doc.check_grammars()
+
+    assert "markdown" not in result.detail
+    assert "json" not in result.detail
+
+
+def test_every_grammar_present_is_a_pass(monkeypatch) -> None:
+    from hearth.indexing import languages
+
+    every = {
+        language
+        for language in languages.known_languages()
+        if languages.declared_support_level(language)
+        in (languages.SupportLevel.FULL, languages.SupportLevel.STRUCTURAL)
+    }
+    monkeypatch.setattr(languages, "grammar_available", lambda: frozenset(every))
+
+    assert doc.check_grammars().status is Status.PASS

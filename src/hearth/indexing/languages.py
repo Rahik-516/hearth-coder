@@ -234,6 +234,18 @@ def _interpreter_from_shebang(first_line: str) -> str | None:
     return None
 
 
+def declared_support_level(language: str | None) -> SupportLevel:
+    """The level a language is declared at, ignoring whether its grammar is installed.
+
+    :func:`support_level` deliberately reports FALLBACK when the grammar is missing, which
+    is what the indexer needs and the wrong answer for anything asking *which languages
+    have been downgraded* — that caller would be told none of them had.
+    """
+    if language is None:
+        return SupportLevel.FALLBACK
+    return _SUPPORT.get(language, SupportLevel.FALLBACK)
+
+
 def support_level(language: str | None) -> SupportLevel:
     """How deeply a language can be analysed in this build.
 

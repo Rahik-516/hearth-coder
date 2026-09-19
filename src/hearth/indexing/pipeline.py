@@ -26,7 +26,7 @@ from hearth.indexing.change_detector import ChangeSet, detect_changes
 from hearth.indexing.chunker import chunk_file
 from hearth.indexing.enrich import enrich_all
 from hearth.indexing.filters import PathFilter, is_too_large, looks_generated
-from hearth.indexing.languages import detect_language, is_parseable
+from hearth.indexing.languages import detect_language, grammar_available, is_parseable
 from hearth.indexing.parser import ParseResult, parse
 from hearth.indexing.scanner import ScannedFile, scan
 from hearth.indexing.symbols import ExtractionResult, extract
@@ -128,7 +128,14 @@ class Indexer:
         stats.scanned = len(scan_result.files)
         stats.skipped_by_reason = dict(scan_result.skipped)
 
-        changes = detect_changes(scan_result.files, self._repo.file_states(), force=force)
+        changes = detect_changes(
+            scan_result.files,
+            self._repo.file_states(),
+            force=force,
+            # A grammar installed since the last run makes previously skipped files
+            # parseable without touching their bytes, which change detection cannot see.
+            recheck=self._repo.paths_now_parseable(grammar_available()),
+        )
         stats.added = len(changes.added)
         stats.modified = len(changes.modified)
         stats.unchanged = len(changes.unchanged)

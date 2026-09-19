@@ -229,3 +229,43 @@ def test_broken_syntax_file_is_indexed_not_dropped(py_small: Path, repo: IndexRe
         ("src/billing/broken_syntax.py",),
     ).fetchone()[0]
     assert chunks > 0
+
+
+def test_installing_a_grammar_reindexes_the_files_it_unlocks(tmp_path: Path, monkeypatch) -> None:
+    """Installing a language grammar must not leave its files stranded as windows.
+
+    Change detection compares size, mtime and hash, so a newly installed grammar — which
+    changes what Hearth can *extract* without touching a single byte — is invisible to it.
+    Before this was handled, `uv sync --extra langs-extra` followed by `hearth index`
+    reported "4 unchanged" and produced zero Go, Rust and Java symbols, permanently,
+    unless the user happened to think of `--rebuild`. Nothing suggested they should.
+    """
+    from hearth.indexing import languages, pipeline
+
+    source = Path(__file__).resolve().parents[1] / "fixtures" / "repos" / "polyglot"
+    if not {"go", "rust", "java"} <= languages.grammar_available():
+        pytest.skip("language grammars not installed (uv sync --extra langs-extra)")
+
+    workspace = tmp_path / "polyglot"
+    shutil.copytree(source, workspace)
+    connection = connect(tmp_path / "index.db")
+    migrate(connection, database="index")
+    repo = IndexRepository(connection)
+
+    # As if the extra were not installed.
+    monkeypatch.setattr(pipeline, "grammar_available", lambda: frozenset({"python"}))
+    monkeypatch.setattr(languages, "grammar_available", lambda: frozenset({"python"}))
+    pipeline.Indexer(root=workspace, repository=repo).run()
+    assert repo.count_symbols() == 0, "premise: no grammar means no symbols"
+
+    # The user installs the extra and re-runs `hearth index`.
+    monkeypatch.undo()
+    stats = pipeline.Indexer(root=workspace, repository=repo).run()
+
+    assert stats.modified >= 3, "the unlocked files must be re-indexed"
+    assert repo.count_symbols() > 0
+
+    # And the M1 criterion still holds: a further run parses nothing.
+    again = pipeline.Indexer(root=workspace, repository=repo).run()
+    assert again.parsed == 0
+    assert again.modified == 0
