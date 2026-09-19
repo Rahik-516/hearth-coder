@@ -18,7 +18,7 @@ within a minute or two rather than after a full embed.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -179,6 +179,55 @@ class Indexer:
         self._repo.set_meta(_EXTRACTION_VERSION_KEY, str(EXTRACTION_VERSION))
         stats.duration_s = time.monotonic() - started
         self._emit("done", stats.files_written, stats.files_written)
+        return stats
+
+    def index_paths(self, relatives: Iterable[str]) -> IndexStats:
+        """Re-index only those of ``relatives`` whose contents actually changed.
+
+        The watcher's entry point. ``index_one`` deliberately re-indexes unconditionally,
+        because the write tools call it knowing the file just changed — but a branch
+        switch hands over the whole working tree, and re-parsing four hundred files that
+        git left byte-identical is the cost the I2 criterion exists to rule out.
+
+        Change detection is **scoped to the given paths**: ``detect_changes`` derives
+        deletions from "indexed but not scanned", so passing the full index against a
+        subset of files would report every file outside the batch as deleted and remove
+        them. The scoped view means ``deleted`` covers only paths in this batch.
+        """
+        stats = IndexStats()
+        wanted = list(dict.fromkeys(relatives))
+        if not wanted:
+            return stats
+
+        indexed = self._repo.file_states()
+        scoped = {path: indexed[path] for path in wanted if path in indexed}
+
+        scanned: list[ScannedFile] = []
+        for relative in wanted:
+            absolute = self._root / relative
+            try:
+                stat = absolute.stat()
+            except OSError:
+                continue  # gone, or unreadable: handled as a deletion below
+            if absolute.is_file():
+                scanned.append(
+                    ScannedFile(
+                        relative_path=relative,
+                        absolute_path=absolute,
+                        size_bytes=stat.st_size,
+                        mtime_ns=stat.st_mtime_ns,
+                    )
+                )
+
+        changes = detect_changes(scanned, scoped)
+        stats.scanned = len(scanned)
+        stats.added = len(changes.added)
+        stats.modified = len(changes.modified)
+        stats.unchanged = len(changes.unchanged)
+        stats.hashed = changes.hashed
+
+        self._remove_deleted(changes, stats)
+        self._index_files(changes.needs_indexing, stats)
         return stats
 
     def index_one(self, relative_path: str) -> bool:

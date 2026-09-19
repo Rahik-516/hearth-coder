@@ -67,10 +67,21 @@ counts as a mismatch, since an index written before the key existed has unknown 
 currently ships. `hearth doctor` lists which languages have grammars and warns only when one is
 installable, so the gap is visible without being nagging.
 
+**I2 is done.** `core/context/compactor.py` with `/compact` and an automatic trigger at 75% of the
+usable window; `read_output` for paging a stored command capture; `indexing/watcher.py` with debounced
+batches. The criteria pass as tests: a 60-turn session stays under `num_ctx` at four tiers keeping its
+pinned facts, and a real `git checkout` burst parses exactly the one file git changed.
+
+**`Indexer.index_paths` is the watcher's entry point, not `index_one`.** `index_one` re-indexes
+unconditionally, which is right for the write tools (they call it knowing the file just changed) and
+wrong for a branch switch, where it re-parsed all 400 byte-identical files. `index_paths` scopes change
+detection to the given paths — scoping matters, since `detect_changes` derives deletions from "indexed
+but not scanned", so handing it the full index against a subset would delete everything else.
+
 **Also outstanding:** (1) **batch review** (§6.4) — needs a loop pre-pass that prepares every write in a
 multi-write step and one review screen; `cli/approval.batch_blockers` is already written and tested,
 and the roadmap names this the first thing to cut. (2) **The 9b half of the task eval** — now possible,
-since the GPU works. (3) I2–I4 and Phase 3 are not started.
+since the GPU works. (3) I3, I4 and Phase 3 are not started.
 
 **The GPU works, after a fix worth remembering.** Ollama's device discovery was crashing
 (`0xc0000005`) on every backend because `llama-server.exe` loaded the old system
