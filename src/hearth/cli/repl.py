@@ -180,6 +180,8 @@ class ChatREPL:
                 self._show_or_set_model(argument)
             case "/mode":
                 self._show_or_set_mode(argument)
+            case "/compact":
+                await self._compact()
             case "/thinking":
                 self._renderer.show_thinking = not self._renderer.show_thinking
                 state = "on" if self._renderer.show_thinking else "off"
@@ -282,6 +284,21 @@ class ChatREPL:
                 f"  [cyan]{source.path}:{source.start_line}-{source.end_line}[/cyan]"
                 f"  [dim]{source.retriever or ''}[/dim]"
             )
+
+    async def _compact(self) -> None:
+        """Summarise the older history now, rather than waiting for the window to fill.
+
+        Useful before a long task: compaction costs one full prefill, and paying it
+        deliberately between turns is better than having it land in the middle of one.
+        """
+        result = await self.runner.maybe_compact(self.session, force=True)
+        if result.compacted:
+            self.console.print(
+                f"[dim]compacted {result.replaced} message(s), "
+                f"~{result.tokens_saved} tokens freed; the next turn re-prefills once[/dim]"
+            )
+        elif result.degraded is None:
+            self.console.print("[dim]nothing to compact yet[/dim]")
 
     def _show_or_set_mode(self, argument: str) -> None:
         """Show the mode, or switch it.

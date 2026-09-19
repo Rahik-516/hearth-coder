@@ -90,6 +90,18 @@ class Session:
         self.epoch += 1
         self.pinned_paths.clear()
 
+    def replace_history(self, messages: list[Message]) -> None:
+        """Swap history for a compacted version, starting a new epoch.
+
+        The epoch bump is the whole cost of compaction: everything before the current
+        message is the cached prefix, and rewriting history invalidates it, so the next
+        turn pays one full prefill (docs/system-design.md §9.2). Not bumping would be
+        worse than the cost — the server would be told a prefix it no longer holds is
+        still valid.
+        """
+        self.history = list(messages)
+        self.epoch += 1
+
     def observe_prefill(self, *, prompt_tokens: int | None, prefill_ms: float | None) -> int | None:
         """Record a prefill measurement and estimate how much of it was cached.
 

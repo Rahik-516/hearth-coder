@@ -20,6 +20,7 @@ SLASH_COMMANDS: dict[str, str] = {
     "/model": "show or switch the chat model",
     "/mode": "show or switch mode: chat or agent",
     "/clear": "clear this session's history",
+    "/compact": "summarise older history to free context",
     "/sources": "show the context retrieved for the last turn",
     "/thinking": "toggle showing the model's reasoning",
     "/sessions": "list recent sessions",

@@ -26,6 +26,7 @@ from hearth.core.agent_loop import AgentLoop
 from hearth.core.bus import EventBus
 from hearth.core.context.budget import Segment, budget_for
 from hearth.core.context.builder import BuiltRequest, ContextBuilder
+from hearth.core.context.compactor import CompactionPolicy, CompactionResult, compact
 from hearth.core.context.tokens import observe
 from hearth.core.events import (
     ContextStats,
@@ -43,7 +44,7 @@ from hearth.core.limits import TurnLimits
 from hearth.core.session import Session
 from hearth.llm.errors import LLMError
 from hearth.llm.provider import LLMProvider
-from hearth.llm.types import ChatRequest, Sampling, ThinkLevel
+from hearth.llm.types import ChatRequest, Message, Sampling, ThinkLevel
 from hearth.prompts import system_prompt_for
 from hearth.retrieval.engine import RetrievalEngine, RetrievalResult
 from hearth.retrieval.repomap import RepoMapBuilder
@@ -171,6 +172,9 @@ class ChatRunner:
         )
 
         try:
+            # Before the turn, not after: the turn that would have overflowed is the one
+            # that benefits, and the builder's truncation is a last resort, not the plan.
+            await self.maybe_compact(session)
             retrieval = await self._retrieve(session, user_text)
             request = self._build(session, user_text, retrieval)
             result = await self._stream(session, request)
@@ -246,6 +250,7 @@ class ChatRunner:
         )
 
         try:
+            await self.maybe_compact(session)
             retrieval = await self._retrieve(session, user_text)
             built = self._build(session, user_text, retrieval)
             base = ChatRequest(
@@ -354,6 +359,69 @@ class ChatRunner:
             repo_map=self._repo_map_for(session, budget.limit(Segment.REPO_MAP)),
         )
         return request
+
+    async def maybe_compact(self, session: Session, *, force: bool = False) -> CompactionResult:
+        """Compact this session's history when it is close to filling the window.
+
+        Called before a turn is built, and by ``/compact``. Checked *before* rather than
+        after, so the turn that would have overflowed is the one that benefits — the
+        context builder's own truncation is a last resort, not the plan.
+        """
+        policy = CompactionPolicy(budget=budget_for(session.num_ctx), estimator=session.estimator)
+        overhead = self._fixed_overhead(session)
+
+        if not force and not policy.should_compact(session.history, overhead_tokens=overhead):
+            return CompactionResult(history=list(session.history))
+
+        result = await compact(
+            session.history,
+            policy=policy,
+            summarize=lambda prompt: self._summarize(session, prompt),
+            pinned_facts=list(session.pinned_paths),
+        )
+
+        if result.compacted:
+            session.replace_history(result.history)
+            await self._bus.publish(
+                Notice(
+                    level="info",
+                    message=(
+                        f"Compacted {result.replaced} message(s), freeing about "
+                        f"{result.tokens_saved} tokens. The next turn re-prefills once."
+                    ),
+                )
+            )
+        elif result.degraded and force:
+            # Only surfaced for an explicit `/compact`: an automatic attempt that declined
+            # to shrink the history is ordinary, and reporting it every turn is noise.
+            await self._bus.publish(Notice(level="warning", message=f"Not compacted: {result.degraded}"))
+
+        return result
+
+    async def _summarize(self, session: Session, prompt: str) -> str:
+        """Ask the model for the summary. The only place compaction touches the LLM."""
+        request = ChatRequest(
+            model=session.model,
+            messages=[Message(role="user", content=prompt)],
+            num_ctx=session.num_ctx,
+            think="off",
+            sampling=Sampling(temperature=0.0),
+        )
+
+        parts: list[str] = []
+        async for chunk in self._provider.chat_stream(request):
+            if chunk.content_delta:
+                parts.append(chunk.content_delta)
+        return "".join(parts)
+
+    def _fixed_overhead(self, session: Session) -> int:
+        """Tokens compaction cannot reclaim: the system prompt and the repo map."""
+        budget = budget_for(session.num_ctx)
+        overhead = session.estimator.estimate(system_prompt_for(session.mode.value))
+        repo_map = self._map_cache.get((session.id, session.epoch))
+        if repo_map:
+            overhead += session.estimator.estimate(repo_map)
+        return min(overhead, budget.num_ctx)
 
     def _repo_map_for(self, session: Session, budget_tokens: int) -> str | None:
         """The repo map for this cache epoch, built once and reused.
