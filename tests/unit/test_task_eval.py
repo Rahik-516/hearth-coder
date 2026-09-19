@@ -52,7 +52,11 @@ def test_the_rename_task_starts_unsatisfied(tmp_path: Path) -> None:
 
     passed, detail = spec.check(workspace)
     assert not passed
-    assert "compute_total" in detail or "appears nowhere" in detail
+    # "old name still in ..." is the signal that the symbol is genuinely present and
+    # genuinely un-renamed. The earlier form of this assertion accepted "appears nowhere"
+    # too, which is what an *impossible* task looks like — so it passed while the task
+    # named a function the fixture did not have.
+    assert "old name still in" in detail
 
 
 def test_deleting_the_failing_test_does_not_count_as_fixing_it(tmp_path: Path) -> None:
@@ -102,3 +106,28 @@ def test_the_report_counts_and_renders() -> None:
     assert "1/2 tasks passed" in rendered
     assert "PASS  a" in rendered
     assert "FAIL  b" in rendered
+
+
+def test_every_task_names_symbols_the_fixture_actually_has(tmp_path: Path) -> None:
+    """The bug that made the first live eval meaningless.
+
+    Two of the three tasks named functions (`compute_total`, `apply_discount`) that
+    py_small does not contain. The model searched, correctly reported the symbol was
+    missing, and the scorer recorded a failure — so the run measured the tasks, not the
+    model. prepare_workspace now refuses an unanswerable task outright.
+    """
+    for index, spec in enumerate(TASKS):
+        prepare_workspace(spec, repo_root=REPO_ROOT, destination=tmp_path / f"copy{index}")
+
+
+def test_a_task_naming_a_missing_symbol_is_refused(tmp_path: Path) -> None:
+    spec = TaskSpec(
+        name="impossible",
+        fixture="py_small",
+        prompt="rename nonexistent_function",
+        check=lambda _: (True, ""),
+        required_symbols=("nonexistent_function",),
+    )
+
+    with pytest.raises(ValueError, match="unanswerable"):
+        prepare_workspace(spec, repo_root=REPO_ROOT, destination=tmp_path / "copy")

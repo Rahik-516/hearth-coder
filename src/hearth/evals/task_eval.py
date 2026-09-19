@@ -28,6 +28,13 @@ from pathlib import Path
 #: Where the fixture repositories live, relative to the repository root.
 FIXTURES = Path("tests/fixtures/repos")
 
+#: The rename task's symbols. Both must exist in the fixture — the first run of this eval
+#: used invented names, and the model correctly reported that the symbol was not there,
+#: which the scorer then counted as a failure. `required_symbols` exists so that can never
+#: happen silently again.
+RENAME_FROM = "compute_subtotal"
+RENAME_TO = "calculate_subtotal"
+
 
 @dataclass(frozen=True)
 class TaskSpec:
@@ -40,6 +47,11 @@ class TaskSpec:
     check: Callable[[Path], tuple[bool, str]]
     #: Applied to the disposable copy before the run, for tasks that need a broken state.
     setup: Callable[[Path], None] | None = None
+    #: Identifiers the fixture must already contain for the task to be answerable at all.
+    #: A task naming something that is not there is not a hard task, it is a broken one:
+    #: the only correct response is the model saying so, which the scorer would mark as a
+    #: failure. Checked by :func:`prepare_workspace` before the run.
+    required_symbols: tuple[str, ...] = ()
 
 
 @dataclass
@@ -106,11 +118,11 @@ def _check_suite_green(root: Path) -> tuple[bool, str]:
 
 
 def _check_added_test(root: Path) -> tuple[bool, str]:
-    """A new test exists for `apply_discount`, and the suite still passes."""
+    """A new test exercises `compute_tax`, and the suite still passes."""
     tests = list((root / "tests").rglob("test_*.py"))
-    mentions = [path for path in tests if "apply_discount" in path.read_text(encoding="utf-8")]
+    mentions = [path for path in tests if "compute_tax" in path.read_text(encoding="utf-8")]
     if not mentions:
-        return False, "no test mentions apply_discount"
+        return False, "no test mentions compute_tax"
     return _check_suite_green(root)
 
 
@@ -119,12 +131,12 @@ def _check_rename(root: Path) -> tuple[bool, str]:
     stale = [
         path.relative_to(root).as_posix()
         for path in root.rglob("*.py")
-        if "compute_total" in path.read_text(encoding="utf-8")
+        if RENAME_FROM in path.read_text(encoding="utf-8")
     ]
     if stale:
         return False, f"old name still in {', '.join(sorted(stale)[:3])}"
 
-    renamed = any("calculate_total" in path.read_text(encoding="utf-8") for path in root.rglob("*.py"))
+    renamed = any(RENAME_TO in path.read_text(encoding="utf-8") for path in root.rglob("*.py"))
     if not renamed:
         return False, "new name appears nowhere"
     return _check_suite_green(root)
@@ -169,19 +181,22 @@ TASKS: tuple[TaskSpec, ...] = (
         name="add-unit-test",
         fixture="py_small",
         prompt=(
-            "Add a unit test for apply_discount in src/billing/invoice_service.py. "
-            "Put it with the existing tests and run the suite to check it passes."
+            "Add a unit test for InvoiceService.compute_tax in "
+            "src/billing/invoice_service.py. Put it with the existing tests and run the "
+            "suite to check it passes."
         ),
         check=_check_added_test,
+        required_symbols=("compute_tax",),
     ),
     TaskSpec(
         name="rename-symbol",
         fixture="py_small",
         prompt=(
-            "Rename the function compute_total to calculate_total everywhere it appears, "
+            f"Rename the method {RENAME_FROM} to {RENAME_TO} everywhere it appears, "
             "including its callers and tests. Run the tests afterwards."
         ),
         check=_check_rename,
+        required_symbols=(RENAME_FROM,),
     ),
     TaskSpec(
         name="fix-failing-test",
@@ -206,6 +221,18 @@ def prepare_workspace(spec: TaskSpec, *, repo_root: Path, destination: Path) -> 
     source = repo_root / FIXTURES / spec.fixture
     if not source.is_dir():
         raise FileNotFoundError(f"fixture repo not found: {source}")
+
+    missing = [
+        symbol
+        for symbol in spec.required_symbols
+        if not any(symbol in path.read_text(encoding="utf-8") for path in source.rglob("*.py"))
+    ]
+    if missing:
+        raise ValueError(
+            f"task {spec.name!r} names {', '.join(missing)}, which {spec.fixture} does not "
+            "contain — the task is unanswerable, and a model that says so would be scored "
+            "as failing it"
+        )
 
     shutil.copytree(source, destination, dirs_exist_ok=False)
     if spec.setup is not None:
