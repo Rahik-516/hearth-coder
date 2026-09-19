@@ -24,7 +24,7 @@ import numpy as np
 
 from hearth.core.agent_loop import AgentLoop
 from hearth.core.bus import EventBus
-from hearth.core.context.budget import budget_for
+from hearth.core.context.budget import Segment, budget_for
 from hearth.core.context.builder import BuiltRequest, ContextBuilder
 from hearth.core.context.tokens import observe
 from hearth.core.events import (
@@ -46,6 +46,7 @@ from hearth.llm.provider import LLMProvider
 from hearth.llm.types import ChatRequest, Sampling, ThinkLevel
 from hearth.prompts import system_prompt_for
 from hearth.retrieval.engine import RetrievalEngine, RetrievalResult
+from hearth.retrieval.repomap import RepoMapBuilder
 from hearth.tools.gateway import ToolGateway
 
 #: Produces a query vector for dense retrieval.
@@ -149,12 +150,18 @@ class ChatRunner:
         engine: RetrievalEngine | None = None,
         embed_query: QueryEmbedder | None = None,
         retrieval_limit: int = 8,
+        repo_map: RepoMapBuilder | None = None,
     ) -> None:
         self._provider = provider
         self._bus = bus
         self._engine = engine
         self._embed_query = embed_query
         self._retrieval_limit = retrieval_limit
+        self._repo_map = repo_map
+        #: (session id, epoch) -> rendered map. Keyed by epoch because the map sits in the
+        #: cached prefix: rebuilding it mid-session would change those bytes and throw the
+        #: KV cache away on every turn (docs/system-design.md §9.2).
+        self._map_cache: dict[tuple[str, int], str] = {}
 
     async def run_turn(self, session: Session, user_text: str) -> TurnResult:
         """Run one turn end to end."""
@@ -337,17 +344,49 @@ class ChatRunner:
         return result
 
     def _build(self, session: Session, user_text: str, retrieval: RetrievalResult | None) -> BuiltRequest:
-        builder = ContextBuilder(
-            budget=budget_for(session.num_ctx),
-            estimator=session.estimator,
-        )
+        budget = budget_for(session.num_ctx)
+        builder = ContextBuilder(budget=budget, estimator=session.estimator)
         request = builder.build(
             system_prompt=system_prompt_for(session.mode.value),
             user_message=user_text,
             history=session.history,
             retrieved=retrieval.results if retrieval else None,
+            repo_map=self._repo_map_for(session, budget.limit(Segment.REPO_MAP)),
         )
         return request
+
+    def _repo_map_for(self, session: Session, budget_tokens: int) -> str | None:
+        """The repo map for this cache epoch, built once and reused.
+
+        Personalised by what the session has touched or pinned, so the map describes the
+        repository from where the user is standing rather than in the abstract.
+
+        A failure here returns None rather than propagating: the map is an aid, and losing
+        it should cost the model some context, not cost the user their turn.
+        """
+        if self._repo_map is None or budget_tokens <= 0:
+            return None
+
+        key = (session.id, session.epoch)
+        if key in self._map_cache:
+            return self._map_cache[key]
+
+        personalization = {path: 1.0 for path in session.touched_paths}
+        # Pins are a deliberate "look here" and outrank a file the session merely edited.
+        personalization.update({path: 3.0 for path in session.pinned_paths})
+
+        try:
+            result = self._repo_map.build(
+                budget_tokens=budget_tokens,
+                personalization=personalization,
+                estimator=session.estimator,
+            )
+            text = result.text
+        except Exception:
+            text = ""
+
+        self._map_cache[key] = text
+        return text or None
 
     async def _stream(self, session: Session, request: BuiltRequest) -> TurnResult:
         """Stream a completion, emitting deltas as they arrive."""

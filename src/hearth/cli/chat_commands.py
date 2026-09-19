@@ -34,6 +34,7 @@ from hearth.llm.ollama_provider import OllamaProvider
 from hearth.llm.profiles import ProfileRegistry
 from hearth.llm.types import Message
 from hearth.retrieval.engine import RetrievalEngine
+from hearth.retrieval.repomap import RepoMapBuilder
 from hearth.safety.audit import AuditLog
 from hearth.safety.checkpoints import CheckpointStore
 from hearth.safety.invariants import privilege_escalation_dirs
@@ -190,7 +191,13 @@ def _run_repl(root: Path, loaded: LoadedConfig, session: Session, store: Session
         raise typer.Exit(1) from exc
 
     bus = EventBus()
-    runner = ChatRunner(provider=provider, bus=bus, engine=engine, embed_query=embed_query)
+    runner = ChatRunner(
+        provider=provider,
+        bus=bus,
+        engine=engine,
+        embed_query=embed_query,
+        repo_map=RepoMapBuilder(index_connection) if index_connection is not None else None,
+    )
 
     # Subscribed even in chat mode, where no tool can reach an approval. The frontend's
     # job is to be able to answer one whenever the core asks; wiring it only for agent
@@ -250,7 +257,7 @@ def ask(
     text, pins = extract_pins(question)
 
     try:
-        provider, engine, embed_query, _ = _build_runtime(root, loaded)
+        provider, engine, embed_query, index_connection = _build_runtime(root, loaded)
     except ProviderConfigError as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(1) from exc
@@ -267,7 +274,13 @@ def ask(
     bus = EventBus()
     renderer = ChatRenderer(console=console, show_sources=show_sources)
     bus.subscribe(renderer)
-    runner = ChatRunner(provider=provider, bus=bus, engine=engine, embed_query=embed_query)
+    runner = ChatRunner(
+        provider=provider,
+        bus=bus,
+        engine=engine,
+        embed_query=embed_query,
+        repo_map=RepoMapBuilder(index_connection) if index_connection is not None else None,
+    )
 
     async def main() -> Message | None:
         try:
@@ -433,7 +446,13 @@ def run(
     if max_steps:
         limits = replace(limits, max_steps=max_steps)
 
-    runner = ChatRunner(provider=provider, bus=bus, engine=engine, embed_query=embed_query)
+    runner = ChatRunner(
+        provider=provider,
+        bus=bus,
+        engine=engine,
+        embed_query=embed_query,
+        repo_map=RepoMapBuilder(index_connection) if index_connection is not None else None,
+    )
     availability = build_default_registry(
         test_command=loaded.config.project.test_command
     ).for_mode(session.mode.value, tool_reliability=profile.tool_reliability)

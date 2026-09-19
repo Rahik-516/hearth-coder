@@ -40,6 +40,7 @@ from hearth.llm.errors import LLMError
 from hearth.llm.ollama_provider import OllamaProvider
 from hearth.llm.profiles import ProfileRegistry
 from hearth.retrieval.engine import RetrievalEngine
+from hearth.retrieval.repomap import RepoMapBuilder
 from hearth.safety.checkpoints import CheckpointStore
 from hearth.storage.blobs import BlobStore
 from hearth.storage.db import connect
@@ -401,7 +402,13 @@ def _run_task(workspace: Path, model: str, prompt: str, *, max_steps: int | None
     if max_steps:
         limits = replace(limits, max_steps=max_steps)
 
-    runner = ChatRunner(provider=provider, bus=bus, engine=engine, embed_query=embed_query)
+    runner = ChatRunner(
+        provider=provider,
+        bus=bus,
+        engine=engine,
+        embed_query=embed_query,
+        repo_map=RepoMapBuilder(index_connection) if index_connection is not None else None,
+    )
     schemas = gateway_schemas(loaded, profile)
 
     async def main() -> AgentTurnResult:
