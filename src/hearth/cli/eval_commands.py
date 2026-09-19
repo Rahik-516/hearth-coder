@@ -7,14 +7,23 @@ index/search commands.
 from __future__ import annotations
 
 import asyncio
+import shutil
+import tempfile
+import time
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 import typer
 from rich.console import Console
 
+from hearth.cli.render import ChatRenderer
 from hearth.config import paths
 from hearth.config.loader import LoadedConfig, load_config
+from hearth.core.bus import EventBus
+from hearth.core.limits import TurnLimits
+from hearth.core.runner import AgentTurnResult, ChatRunner
+from hearth.core.session import Mode, SessionStore
 from hearth.evals.retrieval_eval import (
     EvalDataError,
     EvalDependencyError,
@@ -31,10 +40,13 @@ from hearth.llm.errors import LLMError
 from hearth.llm.ollama_provider import OllamaProvider
 from hearth.llm.profiles import ProfileRegistry
 from hearth.retrieval.engine import RetrievalEngine
+from hearth.safety.checkpoints import CheckpointStore
+from hearth.storage.blobs import BlobStore
 from hearth.storage.db import connect
 from hearth.storage.index_repo import IndexRepository
 from hearth.storage.migrate import migrate
 from hearth.storage.vector_index import NumpyVectorIndex
+from hearth.tools.registry import build_default_registry
 
 console = Console()
 
@@ -286,3 +298,131 @@ def _embed_fixture(loaded: LoadedConfig, vector_index: NumpyVectorIndex) -> Quer
         return vector
 
     return embed_query
+
+
+@eval_app.command("tasks")
+def eval_tasks(
+    repo_root: Path = typer.Option(
+        None, "--repo-root", help="Hearth checkout containing tests/fixtures/repos."
+    ),
+    model: str = typer.Option(None, "--model", "-m", help="Model to evaluate."),
+    only: list[str] = typer.Option(None, "--task", "-t", help="Run only these tasks."),
+    keep: bool = typer.Option(False, "--keep", help="Keep the disposable workspaces."),
+    max_steps: int = typer.Option(None, "--max-steps", help="Override the profile's step limit."),
+) -> None:
+    """Run the agent task suite and report pass/fail with timings.
+
+    Each task runs **headless with every side effect allowed**, in a throwaway copy of a
+    fixture repository. That combination is deliberate: the eval measures whether the loop
+    can finish a change on its own, which a run that stops for approval cannot answer,
+    and the blast radius stays inside a directory that is deleted afterwards.
+    """
+    from hearth.evals.task_eval import TASKS, EvalReport, prepare_workspace, score
+
+    root = (repo_root or Path.cwd()).resolve()
+    selected = [task for task in TASKS if not only or task.name in only]
+    if not selected:
+        console.print(f"[yellow]no matching tasks[/yellow] — have: {', '.join(t.name for t in TASKS)}")
+        raise typer.Exit(1)
+
+    loaded = _config(root)
+    chat_model = model or loaded.config.models.chat
+    report = EvalReport()
+
+    with tempfile.TemporaryDirectory(prefix="hearth-task-eval-") as scratch:
+        for spec in selected:
+            workspace = prepare_workspace(
+                spec, repo_root=root, destination=Path(scratch) / spec.name
+            )
+            console.print(f"[dim]{spec.name}: {workspace}[/dim]")
+            started = time.monotonic()
+
+            result = _run_task(workspace, chat_model, spec.prompt, max_steps=max_steps)
+            report.outcomes.append(
+                score(
+                    spec,
+                    workspace,
+                    steps=result.steps,
+                    tool_calls=result.tool_calls,
+                    reason=result.reason,
+                    started=started,
+                )
+            )
+            if keep:
+                kept = root / f"task-eval-{spec.name}"
+                shutil.copytree(workspace, kept, dirs_exist_ok=True)
+                console.print(f"[dim]kept: {kept}[/dim]")
+
+    console.print()
+    console.print(report.render())
+    raise typer.Exit(0 if report.passed == report.total else 1)
+
+
+def _run_task(workspace: Path, model: str, prompt: str, *, max_steps: int | None) -> AgentTurnResult:
+    """One headless agent run against a disposable workspace."""
+    from hearth.cli.chat_commands import _build_gateway, _build_runtime, _open_state
+
+    loaded = load_config(project_root=workspace)
+    provider, engine, embed_query, index_connection = _build_runtime(workspace, loaded)
+
+    store = SessionStore(_open_state(workspace))
+    session = store.create(
+        workspace=workspace,
+        model=model,
+        num_ctx=loaded.config.models.num_ctx,
+        mode=Mode.AGENT,
+    )
+
+    bus = EventBus()
+    bus.subscribe(ChatRenderer(console=console))
+    checkpoints = CheckpointStore(store.repo, BlobStore(paths.blobs_dir(workspace)))
+
+    gateway = _build_gateway(
+        workspace,
+        loaded,
+        session=session,
+        bus=bus,
+        checkpoints=checkpoints,
+        index_connection=index_connection,
+        engine=engine,
+        headless=True,
+        allow_edits=True,
+        allow_tests=True,
+        allow_commit=False,
+    )
+
+    profile = ProfileRegistry.load().for_model(model)
+    limits = TurnLimits.from_profile(profile, "agent")
+    if max_steps:
+        limits = replace(limits, max_steps=max_steps)
+
+    runner = ChatRunner(provider=provider, bus=bus, engine=engine, embed_query=embed_query)
+    schemas = gateway_schemas(loaded, profile)
+
+    async def main() -> AgentTurnResult:
+        try:
+            return await runner.run_agent_turn(
+                session,
+                prompt,
+                gateway=gateway,
+                tool_schemas=schemas,
+                limits=limits,
+                think="medium" if profile.supports_thinking else "off",
+            )
+        finally:
+            await bus.close()
+            await provider.close()
+
+    try:
+        return asyncio.run(main())
+    except LLMError as exc:
+        console.print(f"[red]{exc}[/red]")
+        return AgentTurnResult(answer="", reason="error")
+
+
+def gateway_schemas(loaded: LoadedConfig, profile: object) -> list[dict[str, object]]:
+    """The tool schemas an agent session is shown, for the configured project."""
+    registry = build_default_registry(test_command=loaded.config.project.test_command)
+    return registry.for_mode(
+        "agent", tool_reliability=getattr(profile, "tool_reliability", "high")
+    ).schemas
