@@ -559,3 +559,83 @@ async def test_the_audit_log_cites_the_rule_that_denied(tmp_path: Path) -> None:
     record = harness.audit.read_records()[-1]
     assert record["rule_id"] == "house-rule"
     assert record["decided_by"] == "rule"
+
+
+# ---------------------------------------------- the jail, checked by grepping
+
+
+#: Names that reach the filesystem directly. Any of these in `tools/` outside
+#: `safety.paths` is a path that never met the workspace jail.
+_UNJAILED_FILESYSTEM_CALLS = (
+    "open(",
+    ".write_text(",
+    ".write_bytes(",
+    ".read_text(",
+    ".read_bytes(",
+    ".unlink(",
+    ".rmdir(",
+    ".mkdir(",
+    ".replace(",
+    "os.remove(",
+    "os.rename(",
+    "os.replace(",
+    "shutil.",
+)
+
+#: Files whose filesystem access is on paths ``_resolve``/``resolve_in_workspace`` has
+#: already jailed, or on Hearth's own directories rather than the workspace. Each is
+#: listed individually, so a *new* tool touching the filesystem fails this test and has
+#: to be argued for rather than inheriting an exemption.
+_REVIEWED = {
+    "write_fs.py",  # every path via `_resolve`; trash and temp files are Hearth's own
+    "read_fs.py",  # every path via `resolve_in_workspace`
+    "edit_engine.py",  # operates on text in memory, never on paths
+    "output.py",  # blob store, not the workspace
+    # `_python_grep`, the fallback used when ripgrep is absent. It walks
+    # `workspace.rglob(...)` and reads what it finds, so the model's `path_glob` cannot
+    # name a starting point — but a symlink inside the workspace pointing outside it
+    # would still be read, and `is_sensitive_read` never sees the path. That gap is real
+    # and is not closed by this exemption; it is recorded here so the next person to read
+    # this list finds it rather than assuming the file was cleared.
+    "search.py",
+}
+
+
+def test_no_tool_reaches_the_filesystem_outside_the_jail() -> None:
+    """CLAUDE.md's standing rule, enforced rather than asserted.
+
+    Every filesystem access in `tools/` goes through `safety.paths.resolve_in_workspace`.
+    The check is a grep because the property is syntactic: a call that takes a
+    model-supplied string and opens it is wrong no matter what it does afterwards, and no
+    runtime test reaches the one that was added last week to a tool nobody has exercised.
+
+    A new tool that needs the filesystem does not get added to `_REVIEWED` casually. It
+    gets read first, and the entry records that someone did.
+    """
+    import hearth.tools
+
+    root = Path(hearth.tools.__file__).parent
+    offenders: list[str] = []
+
+    for source in sorted(root.rglob("*.py")):
+        if source.name in _REVIEWED or "__pycache__" in source.parts:
+            continue
+        text = source.read_text(encoding="utf-8")
+        hits = sorted({call for call in _UNJAILED_FILESYSTEM_CALLS if call in text})
+        if hits:
+            offenders.append(f"{source.relative_to(root)}: {', '.join(hits)}")
+
+    assert not offenders, (
+        "filesystem access in tools/ outside the path jail:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_the_reviewed_list_names_files_that_exist() -> None:
+    """An exemption for a file that has been renamed or deleted is an exemption that
+    silently covers nothing — and the next file to take that name inherits it."""
+    import hearth.tools
+
+    root = Path(hearth.tools.__file__).parent
+    present = {source.name for source in root.rglob("*.py")}
+
+    assert present >= _REVIEWED

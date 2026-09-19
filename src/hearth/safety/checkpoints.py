@@ -248,8 +248,17 @@ class CheckpointStore:
         try:
             current = blob_hash(target.read_bytes())
         except FileNotFoundError:
-            if entry.was_created:
-                # Undo wanted to remove it and it is already gone. Nothing to reconcile.
+            # An absent file is a conflict only when Hearth expected one to be there.
+            #
+            # `after_blob is None` covers a *deletion* — `delete_file` and the source end
+            # of `move_file` both record one — where the file being gone is precisely the
+            # state the checkpoint describes. Treating that as a conflict made every
+            # delete un-undoable, which stayed invisible for as long as nothing produced
+            # such a checkpoint.
+            #
+            # `was_created` covers the other direction: undo wanted to remove the file and
+            # something already has. Nothing left to reconcile.
+            if entry.after_blob is None or entry.was_created:
                 return None
             return Conflict(path=entry.path, expected=entry.after_blob, actual=None)
         except OSError:

@@ -65,7 +65,10 @@ _MODE_TOOLS: dict[str, tuple[str, ...]] = {
         "read_output",
         "todo_write",
         "edit_file",
+        "multi_edit",
         "write_file",
+        "move_file",
+        "delete_file",
         "run_command",
         "run_tests",
         "git_add",
@@ -226,7 +229,13 @@ def build_default_registry(
     )
     from hearth.tools.shell import RunCommandTool
     from hearth.tools.tests import RunTestsTool
-    from hearth.tools.write_fs import EditFileTool, WriteFileTool
+    from hearth.tools.write_fs import (
+        DeleteFileTool,
+        EditFileTool,
+        MoveFileTool,
+        MultiEditTool,
+        WriteFileTool,
+    )
 
     return ToolRegistry(
         [
@@ -241,7 +250,10 @@ def build_default_registry(
             GitDiffTool(),
             GitLogTool(),
             EditFileTool(),
+            MultiEditTool(),
             WriteFileTool(),
+            MoveFileTool(),
+            DeleteFileTool(),
             RunCommandTool(),
             RunTestsTool(test_command=test_command, source=test_command_source),
             GitAddTool(),

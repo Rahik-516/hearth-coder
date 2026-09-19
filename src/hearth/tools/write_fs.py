@@ -55,6 +55,11 @@ from hearth.util.hashing import content_hash
 #: uses for `delete_file`: at this size you are replacing a file, not editing it.
 DESTRUCTIVE_OVERWRITE_LINES = 200
 
+#: Edits one ``multi_edit`` call may carry. Beyond this the model has stopped editing a
+#: file and started rewriting it, and one diff of that size is not reviewable — which
+#: defeats the point of putting it behind a single approval.
+MAX_EDITS_PER_CALL = 20
+
 
 # ----------------------------------------------------------------- edit_file
 
@@ -151,6 +156,143 @@ class EditFileTool(Tool[EditFileArgs]):
         )
 
     def execute(self, args: EditFileArgs, context: ToolContext, prepared: Prepared) -> ToolResult:
+        return _commit(context, prepared, verb="Edited")
+
+
+# ---------------------------------------------------------------- multi_edit
+
+
+class EditSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    old_string: str = Field(min_length=1, description="Exact text to replace")
+    new_string: str = Field(description="Replacement text")
+    replace_all: bool = Field(default=False, description="Replace every occurrence")
+
+
+class MultiEditArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(description="Workspace-relative path of an existing file you have read")
+    edits: list[EditSpec] = Field(
+        min_length=1,
+        max_length=MAX_EDITS_PER_CALL,
+        description="Edits to apply in order, as one atomic change",
+    )
+
+
+class MultiEditTool(Tool[MultiEditArgs]):
+    """Several replacements in one file, as one approval and one diff (§2.2).
+
+    **All or nothing.** The edits are applied in order to an in-memory copy, and if any of
+    them fails the whole call fails with nothing written. That is not a convenience: a
+    partial application would leave the file in a state neither the model nor the user
+    asked for, halfway between two designs, and the model's next step would be an edit
+    computed against the shape it *expected*.
+
+    Applying in order also means a later edit sees the earlier ones. This is what makes
+    the tool worth having over repeated ``edit_file`` calls — a rename that touches six
+    call sites is one diff to read and one checkpoint to undo, rather than six of each —
+    but it has a sharp edge: an edit whose ``old_string`` an earlier edit has already
+    rewritten will not match. The error says which index failed and what the file looked
+    like by then, because "edit 4 of 6 did not match" is otherwise indistinguishable from
+    "edit 4 was wrong".
+    """
+
+    name = "multi_edit"
+    description = (
+        "Apply several replacements to one file as a single change. Read the file first. "
+        "Edits apply in order; if any fails, none are applied."
+    )
+    risk = Risk.WRITE
+    args_model = MultiEditArgs
+
+    def prepare(self, args: MultiEditArgs, context: ToolContext) -> Prepared:
+        target = _resolve(context, args.path)  # PathError propagates; see edit_file.
+        relative = target.relative
+
+        if not target.path.is_file():
+            return _refused(
+                relative,
+                ErrorCode.NOT_FOUND,
+                f"{relative} does not exist. Use write_file to create it.",
+            )
+
+        try:
+            raw = target.path.read_bytes()
+        except OSError as exc:
+            return _refused(relative, ErrorCode.NOT_FOUND, f"could not read {relative}: {exc}")
+
+        form = read_form(raw)
+        if not form.usable:
+            return _refused(relative, ErrorCode.INVALID_ARGUMENTS, f"{relative}: {form.reason}")
+
+        stale = _staleness(context, relative, raw)
+        if stale is not None:
+            return _refused(relative, ErrorCode.STALE_FILE, stale)
+
+        original = form.decode(raw)
+        language = detect_language(relative)
+        text = original
+        badges: list[str] = []
+        replacements = 0
+
+        for index, edit in enumerate(args.edits, start=1):
+            outcome = apply_edit(
+                text,
+                edit.old_string,
+                edit.new_string,
+                replace_all=edit.replace_all,
+                language=language,
+            )
+            if not outcome.ok or outcome.new_text is None:
+                return _refused(
+                    relative,
+                    ErrorCode.NOT_FOUND,
+                    _multi_edit_failure(index, len(args.edits), outcome, applied=index - 1),
+                )
+            text = outcome.new_text
+            replacements += outcome.replacements
+            badges.extend(badge for badge in outcome.badges if badge not in badges)
+
+        if text == original:
+            return _refused(
+                relative,
+                ErrorCode.INVALID_ARGUMENTS,
+                f"every edit matched but left {relative} unchanged, so there is nothing to write.",
+            )
+
+        added, removed = diff_stats(original, text)
+        badges.extend(badge for badge in _secret_badges(original, text) if badge not in badges)
+
+        return Prepared(
+            summary=f"edit {relative} ({len(args.edits)} edits)  +{added} -{removed}",
+            preview=unified_diff(original, text, path=relative),
+            badges=badges,
+            payload={
+                "resolved": target.path,
+                "relative": relative,
+                "new_text": text,
+                "form": form,
+                "before_hash": content_hash(raw),
+                "added": added,
+                "removed": removed,
+                "replacements": replacements,
+            },
+            facts=PolicyFacts(
+                path=relative,
+                absolute_path=target.path.as_posix(),
+                inside_workspace=True,
+                badges=tuple(badges),
+                # The same key `edit_file` uses. A grant is permission to change *this
+                # file*, and which tool does the changing is not something the user was
+                # asked about — offering a second key would mean granting one tool and
+                # being asked again by the other for the identical write.
+                grant_key=f"edit:{relative}",
+            ),
+        )
+
+    def execute(self, args: MultiEditArgs, context: ToolContext, prepared: Prepared) -> ToolResult:
         return _commit(context, prepared, verb="Edited")
 
 
@@ -257,7 +399,398 @@ class WriteFileTool(Tool[WriteFileArgs]):
         return _commit(context, prepared, verb="Wrote")
 
 
+# ----------------------------------------------------------------- move_file
+
+
+class MoveFileArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    src: str = Field(description="Workspace-relative path to move")
+    dst: str = Field(description="Workspace-relative destination path")
+
+
+class MoveFileTool(Tool[MoveFileArgs]):
+    """Rename or move a file within the workspace (§2.2).
+
+    Read-before-write does **not** apply here, and that is deliberate rather than an
+    oversight. The rule exists so a diff is computed against bytes someone has seen; a move
+    changes no bytes, so there is nothing to have read and requiring it would only make the
+    model read a file in order to rename it.
+
+    What the preview carries instead is a **reference count**: how many other files mention
+    the old path. Moving a module is rarely the whole change, and "14 files mention
+    src/billing/models.py" is the fact that tells a reviewer this rename is either the
+    start of a larger edit or a mistake. It is a hint, not a check — Hearth does not
+    rewrite imports, and pretending otherwise by refusing the move would be worse.
+
+    Both ends are checkpointed, so undo puts the file back where it was rather than leaving
+    a copy at each path.
+    """
+
+    name = "move_file"
+    description = "Move or rename a file within the workspace. Does not update references to it."
+    risk = Risk.WRITE
+    args_model = MoveFileArgs
+
+    def prepare(self, args: MoveFileArgs, context: ToolContext) -> Prepared:
+        # Both ends resolve for write. The destination obviously must; so must the source,
+        # because a move deletes it — resolving it read-only would let a file be moved out
+        # of `.git/` by a call the jail had no reason to refuse.
+        source = _resolve(context, args.src)
+        destination = _resolve(context, args.dst)
+
+        if not source.path.is_file():
+            return _refused(
+                source.relative, ErrorCode.NOT_FOUND, f"{source.relative} does not exist."
+            )
+        if source.path == destination.path:
+            return _refused(
+                source.relative,
+                ErrorCode.INVALID_ARGUMENTS,
+                f"{source.relative} and {destination.relative} are the same path.",
+            )
+        if destination.path.exists():
+            return _refused(
+                destination.relative,
+                ErrorCode.INVALID_ARGUMENTS,
+                f"{destination.relative} already exists. Delete it first if that is intended.",
+            )
+
+        try:
+            raw = source.path.read_bytes()
+        except OSError as exc:
+            return _refused(
+                source.relative, ErrorCode.NOT_FOUND, f"could not read {source.relative}: {exc}"
+            )
+
+        references = _reference_count(context, source.relative)
+        preview = [f"{source.relative}  →  {destination.relative}"]
+        if references:
+            preview.append(
+                f"\n{references} other file(s) mention {source.relative}. "
+                "Moving it does not update them."
+            )
+
+        return Prepared(
+            summary=f"move {source.relative} → {destination.relative}",
+            preview="\n".join(preview),
+            payload={
+                "source": source.path,
+                "destination": destination.path,
+                "src_relative": source.relative,
+                "dst_relative": destination.relative,
+                "before_hash": content_hash(raw),
+                "bytes": raw,
+            },
+            facts=PolicyFacts(
+                # The destination is the path policy judges: it is what comes into
+                # existence, and it is the one a `path = "src/**"` rule should be read as
+                # being about. The source is checked by the jail either way.
+                path=destination.relative,
+                absolute_path=destination.path.as_posix(),
+                inside_workspace=True,
+                grant_key=f"edit:{destination.relative}",
+            ),
+        )
+
+    def execute(self, args: MoveFileArgs, context: ToolContext, prepared: Prepared) -> ToolResult:
+        source: Path = prepared.payload["source"]
+        destination: Path = prepared.payload["destination"]
+        src_relative: str = prepared.payload["src_relative"]
+        dst_relative: str = prepared.payload["dst_relative"]
+        expected: str = prepared.payload["before_hash"]
+
+        if context.checkpoints is None:
+            return ToolResult.failure(
+                ErrorCode.EXECUTION_FAILED,
+                "no checkpoint store is available, so this move cannot be made revertible.",
+            )
+
+        # --- re-verify (TOCTOU) ---------------------------------------------
+        try:
+            raw = source.read_bytes()
+        except OSError:
+            return ToolResult.failure(
+                ErrorCode.STALE_FILE,
+                f"{src_relative} is gone or unreadable, so it was not moved.",
+            )
+        if content_hash(raw) != expected:
+            return ToolResult.failure(
+                ErrorCode.STALE_FILE,
+                f"{src_relative} changed while this move was awaiting approval, so it was "
+                "not moved.",
+            )
+        if destination.exists():
+            return ToolResult.failure(
+                ErrorCode.STALE_FILE,
+                f"{dst_relative} appeared while this move was awaiting approval, so it was "
+                "not moved.",
+            )
+
+        # Both ends, before the mutation. One entry saying the source is gone and one
+        # saying the destination arrived; undo replays them together and the file ends up
+        # where it started, with no copy left behind.
+        context.checkpoints.snapshot(step=context.step, path=src_relative, before=raw, after=None)
+        context.checkpoints.snapshot(step=context.step, path=dst_relative, before=None, after=raw)
+
+        try:
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            source.replace(destination)
+        except OSError as exc:
+            return ToolResult.failure(
+                ErrorCode.EXECUTION_FAILED, f"could not move {src_relative}: {exc}"
+            )
+
+        # The hash follows the file. Without this, a model that moves a file it has read
+        # and then edits it at the new path is told to read it again — for a rename it
+        # performed itself.
+        context.record_read(dst_relative, expected)
+        _reindex(context, src_relative)
+        _reindex(context, dst_relative)
+
+        return ToolResult.success(
+            f"Moved {src_relative} to {dst_relative}.",
+            display=prepared.preview,
+            path=dst_relative,
+        )
+
+
+# --------------------------------------------------------------- delete_file
+
+
+class DeleteFileArgs(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    path: str = Field(description="Workspace-relative path to delete")
+
+
+class DeleteFileTool(Tool[DeleteFileArgs]):
+    """Delete a file by moving it to Hearth's trash (§2.2).
+
+    **Nothing is unlinked.** The file goes to ``.hearth/<project>/trash/`` and a checkpoint
+    records it, so a delete is revertible twice over — by `/undo`, and by hand from the
+    trash directory afterwards. An agent that can permanently remove a file is an agent
+    whose worst mistake is unbounded, and the cost of avoiding that is a directory the user
+    can empty whenever they like.
+
+    The preview carries the file's size and its git status, because those decide how bad a
+    wrong delete would be. A tracked file with no uncommitted changes is recoverable from
+    git whatever Hearth does; an untracked file exists only here. The second case gets the
+    ``DESTRUCTIVE`` badge — a typed confirmation (§6.3) — as does any file large enough
+    that losing it would be a real loss.
+    """
+
+    name = "delete_file"
+    description = "Delete a file. It is moved to Hearth's trash, not removed permanently."
+    risk = Risk.WRITE
+    args_model = DeleteFileArgs
+
+    def prepare(self, args: DeleteFileArgs, context: ToolContext) -> Prepared:
+        target = _resolve(context, args.path)  # PathError propagates; see edit_file.
+        relative = target.relative
+
+        if target.path.is_dir():
+            return _refused(
+                relative,
+                ErrorCode.INVALID_ARGUMENTS,
+                f"{relative} is a directory. This tool deletes one file at a time.",
+            )
+        if not target.path.is_file():
+            return _refused(relative, ErrorCode.NOT_FOUND, f"{relative} does not exist.")
+
+        try:
+            raw = target.path.read_bytes()
+        except OSError as exc:
+            return _refused(relative, ErrorCode.NOT_FOUND, f"could not read {relative}: {exc}")
+
+        lines = raw.count(b"\n") + (0 if raw.endswith(b"\n") or not raw else 1)
+        status = _git_status_for(context.workspace, relative)
+
+        # Recoverable from git means a wrong delete costs a `git checkout`. Unrecoverable
+        # means it costs the file, and the trash is the only copy — that is the case worth
+        # a typed confirmation, along with anything big enough to be a real loss.
+        recoverable = status == "tracked, committed"
+        destructive = not recoverable or lines > DESTRUCTIVE_OVERWRITE_LINES
+        badges = ["DESTRUCTIVE"] if destructive else []
+
+        preview = "\n".join(
+            [
+                f"delete {relative}",
+                f"  {lines} line(s), {len(raw)} byte(s)",
+                f"  git: {status}",
+                "  moved to Hearth's trash; /undo restores it",
+            ]
+        )
+
+        return Prepared(
+            summary=f"delete {relative} ({lines} lines)",
+            preview=preview,
+            badges=badges,
+            payload={
+                "resolved": target.path,
+                "relative": relative,
+                "before_hash": content_hash(raw),
+                "lines": lines,
+            },
+            facts=PolicyFacts(
+                path=relative,
+                absolute_path=target.path.as_posix(),
+                inside_workspace=True,
+                destructive=destructive,
+                badges=tuple(badges),
+                # Deliberately ungrantable. "Always delete files matching this" is not a
+                # permission anybody means to give, and the policy engine refuses to offer
+                # a grant for a DESTRUCTIVE call anyway (§6.1) — stating None here means
+                # the non-destructive case does not quietly become grantable either.
+                grant_key=None,
+            ),
+        )
+
+    def execute(self, args: DeleteFileArgs, context: ToolContext, prepared: Prepared) -> ToolResult:
+        resolved: Path = prepared.payload["resolved"]
+        relative: str = prepared.payload["relative"]
+        expected: str = prepared.payload["before_hash"]
+
+        if context.checkpoints is None:
+            return ToolResult.failure(
+                ErrorCode.EXECUTION_FAILED,
+                "no checkpoint store is available, so this delete cannot be made revertible.",
+            )
+
+        try:
+            raw = resolved.read_bytes()
+        except OSError:
+            return ToolResult.failure(
+                ErrorCode.STALE_FILE, f"{relative} is gone or unreadable, so it was not deleted."
+            )
+        if content_hash(raw) != expected:
+            return ToolResult.failure(
+                ErrorCode.STALE_FILE,
+                f"{relative} changed while this delete was awaiting approval, so it was not "
+                "deleted. Read it again before deciding.",
+            )
+
+        context.checkpoints.snapshot(step=context.step, path=relative, before=raw, after=None)
+
+        try:
+            destination = _trash(context.workspace, relative)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            resolved.replace(destination)
+        except OSError:
+            # `os.replace` fails across filesystems, which the trash can be on — the
+            # project data directory is not necessarily on the same mount as the
+            # workspace. Copy-then-unlink, in that order, so a failure mid-way leaves the
+            # file present rather than gone.
+            try:
+                destination.write_bytes(raw)
+                resolved.unlink()
+            except OSError as exc:
+                return ToolResult.failure(
+                    ErrorCode.EXECUTION_FAILED, f"could not delete {relative}: {exc}"
+                )
+
+        context.read_hashes.pop(relative, None)
+        _reindex(context, relative)
+
+        return ToolResult.success(
+            f"Deleted {relative} ({prepared.payload['lines']} lines). "
+            "It is in Hearth's trash; /undo restores it.",
+            display=prepared.preview,
+            path=relative,
+        )
+
+
 # ------------------------------------------------------------------ internals
+
+
+def _multi_edit_failure(index: int, total: int, outcome: object, *, applied: int) -> str:
+    """Why one edit in a batch did not apply, and what state the file was in by then.
+
+    The second half is what makes this actionable. Edits compose, so edit 4 runs against
+    the file as edits 1-3 left it — and a model told only "edit 4 did not match" will
+    re-send edit 4 verbatim, because against the file it can see, edit 4 is correct.
+    """
+    error = getattr(outcome, "error", None) or "the edit could not be applied"
+    hint = getattr(outcome, "hint", None)
+
+    parts = [f"edit {index} of {total} did not apply: {error}"]
+    if applied:
+        parts.append(
+            f"Edits 1-{applied} were applied to a working copy first, so edit {index} ran "
+            "against the file as they left it — not against the file you read. Nothing was "
+            "written."
+        )
+    else:
+        parts.append("Nothing was written.")
+    if hint:
+        parts.append(str(hint))
+    return "\n\n".join(parts)
+
+
+def _reference_count(context: ToolContext, relative: str) -> int:
+    """How many *other* indexed files mention this path.
+
+    A hint for the preview, never a check. It uses the index rather than reading the tree
+    because this runs inside ``prepare()``, which must be cheap and must not touch the
+    filesystem more than it has to — and an unindexed workspace returning 0 is the right
+    answer to give when there is nothing to count from.
+    """
+    if context.index_connection is None:
+        return 0
+
+    stem = relative.rsplit("/", 1)[-1].removesuffix(".py")
+    if not stem:
+        return 0
+
+    try:
+        rows = context.index_connection.execute(
+            "SELECT COUNT(DISTINCT f.path) FROM chunks c JOIN files f ON f.id = c.file_id "
+            "WHERE c.content LIKE ? AND f.path <> ?",
+            (f"%{stem}%", relative),
+        ).fetchone()
+    except Exception:
+        # The count is decoration. A schema that has moved on should not fail a move.
+        return 0
+    return int(rows[0]) if rows else 0
+
+
+def _git_status_for(workspace: Path, relative: str) -> str:
+    """One phrase describing what git knows about this file.
+
+    ``tracked, committed`` is the only value that means a wrong delete is free, so it is
+    the only one ``delete_file`` treats as recoverable. Everything else — untracked,
+    modified, ignored, or no repository at all — leaves Hearth's trash as the only copy.
+    """
+    from hearth.git.runner import GitError, is_git_repository, run_git
+
+    if not is_git_repository(workspace):
+        return "not a git repository"
+
+    try:
+        tracked = run_git(workspace, ["ls-files", "--error-unmatch", "--", relative])
+        if not tracked.ok:
+            return "untracked — Hearth's trash will be the only copy"
+
+        status = run_git(workspace, ["status", "--porcelain", "--", relative])
+    except GitError:
+        return "unknown (git could not be run)"
+
+    return "tracked, committed" if not status.text().strip() else "tracked, with uncommitted changes"
+
+
+def _trash(workspace: Path, relative: str) -> Path:
+    """Where a deleted file goes, keeping its workspace-relative shape.
+
+    Timestamped, so deleting and recreating the same path twice does not have the second
+    delete overwrite the first file in the trash — which would quietly destroy the copy
+    that exists precisely so nothing is quietly destroyed.
+    """
+    import time
+
+    from hearth.config import paths
+
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    return paths.trash_dir(workspace) / stamp / relative
 
 
 class _Target:
