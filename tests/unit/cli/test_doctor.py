@@ -210,3 +210,32 @@ async def test_untrusted_allow_rules_are_surfaced(tmp_path: Path) -> None:
     assert trust.status is Status.WARN
     assert trust.fix is not None
     assert "hearth trust" in trust.fix
+
+
+# --------------------------------------------------------------- GPU placement advice
+
+
+def test_a_full_card_is_told_to_shrink_the_model() -> None:
+    """The ordinary case: the model did not fit, so make it smaller."""
+    fix = doc._placement_fix(40, free_vram_mib=120)
+
+    assert "smaller model" in fix
+
+
+def test_an_idle_card_with_zero_percent_is_told_ollama_missed_the_gpu() -> None:
+    """The observed failure on this machine, which the generic advice sends nowhere.
+
+    Ollama's `llama-server --list-devices` crashes during discovery, so it registers no
+    VRAM and runs on CPU while nvidia-smi reports the card healthy and idle. Telling that
+    user to close GPU applications or pick a smaller model cannot help.
+    """
+    fix = doc._placement_fix(0, free_vram_mib=5996)
+
+    assert "did not detect one" in fix
+    assert "will not help" in fix
+    assert "smaller model" not in fix
+
+
+def test_unknown_vram_falls_back_to_the_generic_advice() -> None:
+    """With no nvidia-smi there is nothing to distinguish the two causes."""
+    assert "smaller model" in doc._placement_fix(0, free_vram_mib=None)

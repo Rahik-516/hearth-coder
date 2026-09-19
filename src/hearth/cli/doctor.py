@@ -248,7 +248,7 @@ async def check_ollama(
     results.append(
         await _check_model(provider, config.models.embed, needs="embedding", label="Embedding model")
     )
-    results.extend(await _check_loaded_models(provider))
+    results.extend(await _check_loaded_models(provider, free_vram_mib=free_vram_mib()))
     return results
 
 
@@ -295,7 +295,9 @@ async def _check_model(provider: LLMProvider, model: str, *, needs: str, label: 
     return CheckResult(label, Status.PASS, detail)
 
 
-async def _check_loaded_models(provider: LLMProvider) -> list[CheckResult]:
+async def _check_loaded_models(
+    provider: LLMProvider, *, free_vram_mib: int | None = None
+) -> list[CheckResult]:
     """Report GPU placement for anything currently loaded.
 
     On a 6 GB card this is the check that explains why a session feels slow: a model split
@@ -320,14 +322,53 @@ async def _check_loaded_models(provider: LLMProvider) -> list[CheckResult]:
                     f"Loaded: {entry.name}",
                     Status.WARN,
                     f"only {percent}% on GPU — prefill will be slow",
-                    fix="Lower models.num_ctx, use a smaller model, or close other GPU applications.",
+                    fix=_placement_fix(percent, free_vram_mib),
                 )
             )
     return results
 
 
-def check_vram(config: HearthConfig) -> CheckResult | None:
-    """Compare free VRAM against the configured model, when nvidia-smi is present."""
+def _placement_fix(percent: int, free_vram_mib: int | None) -> str:
+    """What to actually do about a model that is not on the GPU.
+
+    The two causes need opposite advice, and telling them apart is the point of this
+    function. If the card is *full*, the model did not fit and the answer is to make it
+    smaller. If the card is nearly empty and the model is on CPU anyway, nothing fit
+    because Ollama never saw the GPU — and suggesting a smaller model sends the user down
+    a dead end that cannot work.
+
+    The observed form of the second case: Ollama's `llama-server --list-devices` crashes
+    during discovery (exit 0xc0000005 on Windows) for every backend, so it registers
+    `total_vram=0` and runs on CPU while `nvidia-smi` reports the card as healthy and idle.
+    """
+    plenty_free = free_vram_mib is not None and free_vram_mib >= _GPU_IDLE_MIB
+    if percent == 0 and plenty_free:
+        return (
+            f"Ollama is not using the GPU at all, though {free_vram_mib} MiB are free — so "
+            "it did not detect one. Check the Ollama server log for 'GPU discovery' errors, "
+            "then reinstall or update Ollama and the GPU driver. Shrinking the model will "
+            "not help."
+        )
+    return "Lower models.num_ctx, use a smaller model, or close other GPU applications."
+
+
+#: Free VRAM above which "the model is on CPU" cannot be explained by a full card.
+_GPU_IDLE_MIB = 2048
+
+
+def free_vram_mib() -> int | None:
+    """Free VRAM in MiB per nvidia-smi, or None when there is no NVIDIA GPU to ask."""
+    reading = _nvidia_memory()
+    return None if reading is None else reading[1]
+
+
+def _nvidia_memory() -> tuple[int, int] | None:
+    """``(total_mib, free_mib)`` from nvidia-smi, or None when there is no card to ask.
+
+    Shared by the VRAM check and the placement advice, which need the same reading to
+    answer different questions — how much is there, and whether "on CPU" is explained by
+    the card being full.
+    """
     smi = shutil.which("nvidia-smi")
     if not smi:
         return None
@@ -351,6 +392,15 @@ def check_vram(config: HearthConfig) -> CheckResult | None:
         total_mb, free_mb = (int(part.strip()) for part in first.split(",")[:2])
     except ValueError:
         return None
+    return total_mb, free_mb
+
+
+def check_vram(config: HearthConfig) -> CheckResult | None:
+    """Compare free VRAM against the configured model, when nvidia-smi is present."""
+    reading = _nvidia_memory()
+    if reading is None:
+        return None
+    total_mb, free_mb = reading
 
     detail = f"{free_mb} MiB free of {total_mb} MiB"
     if total_mb < 6000:
