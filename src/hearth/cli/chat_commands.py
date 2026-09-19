@@ -210,6 +210,25 @@ def _run_repl(root: Path, loaded: LoadedConfig, session: Session, store: Session
     history_file = paths.project_data_dir(root) / "repl_history"
     history_file.parent.mkdir(parents=True, exist_ok=True)
 
+    # The REPL starts in chat mode, but it is given a gateway anyway: `/mode agent`,
+    # `/plan` and `/execute` all need one, and building it lazily on first use would mean
+    # the failure — an unindexed workspace, say — surfaces three commands into a session
+    # instead of at startup. Mode still decides which tools the model is shown; holding a
+    # gateway grants nothing on its own.
+    gateway, grants = _build_gateway(
+        root,
+        loaded,
+        session=session,
+        bus=bus,
+        checkpoints=checkpoints,
+        index_connection=index_connection,
+        engine=engine,
+        headless=False,
+        allow_edits=False,
+        allow_tests=False,
+        allow_commit=False,
+    )
+
     repl = ChatREPL(
         session=session,
         runner=runner,
@@ -220,6 +239,8 @@ def _run_repl(root: Path, loaded: LoadedConfig, session: Session, store: Session
         completer=ChatCompleter(index_connection),
         workspace=root,
         checkpoints=checkpoints,
+        gateway=gateway,
+        grants=grants,
     )
 
     async def main() -> None:
@@ -315,13 +336,18 @@ def _build_gateway(
     allow_edits: bool,
     allow_tests: bool,
     allow_commit: bool,
-) -> ToolGateway:
+) -> tuple[ToolGateway, set[str]]:
     """Assemble the gateway for an agent session.
 
     The ``--allow-*`` flags are deliberately narrow: each widens exactly one risk class in
     headless mode and nothing else (docs/safety-and-tool-use.md §14). There is no
     ``--allow-all``, because the flag a user types is the only record of what they
     consented to before walking away.
+
+    Returns the gateway and the live grant set it decides against. The set is returned
+    rather than kept private because grants are *session* state, not gateway state: an
+    approved plan adds edit grants to it and a superseding plan removes them, and both
+    happen in the frontend, between turns, with no tool call in sight.
     """
     grants: set[str] = set()
 
@@ -352,7 +378,7 @@ def _build_gateway(
         blobs=BlobStore(paths.blobs_dir(root)),
     )
 
-    return ToolGateway(
+    gateway = ToolGateway(
         registry=build_default_registry(
             test_command=loaded.config.project.test_command,
             test_command_source=str(paths.project_config_file(root))
@@ -366,6 +392,7 @@ def _build_gateway(
         on_grant=grants.add,
         session_id=session.id,
     )
+    return gateway, grants
 
 
 class _HeadlessChannel(EventBusChannel):
@@ -428,7 +455,7 @@ def run(
         bus.subscribe(ApprovalPrompt(bus=bus, console=console))
 
     checkpoints = CheckpointStore(store.repo, BlobStore(paths.blobs_dir(root)))
-    gateway = _build_gateway(
+    gateway, _grants = _build_gateway(
         root,
         loaded,
         session=session,
@@ -454,9 +481,12 @@ def run(
         embed_query=embed_query,
         repo_map=RepoMapBuilder(index_connection) if index_connection is not None else None,
     )
-    availability = build_default_registry(
-        test_command=loaded.config.project.test_command
-    ).for_mode(session.mode.value, tool_reliability=profile.tool_reliability)
+    # Asked of the gateway rather than of a second registry built here. Two registries
+    # is one too many: they are constructed with different arguments, so the schemas the
+    # model was shown could describe a tool selection the gateway never had.
+    availability = gateway.availability(
+        session.mode.value, tool_reliability=profile.tool_reliability
+    )
 
     async def main() -> AgentTurnResult:
         try:

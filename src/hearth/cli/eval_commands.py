@@ -386,7 +386,7 @@ def _run_task(workspace: Path, model: str, prompt: str, *, max_steps: int | None
     bus.subscribe(ChatRenderer(console=console))
     checkpoints = CheckpointStore(store.repo, BlobStore(paths.blobs_dir(workspace)))
 
-    gateway = _build_gateway(
+    gateway, _grants = _build_gateway(
         workspace,
         loaded,
         session=session,

@@ -34,7 +34,7 @@ from hearth.safety.invariants import privilege_escalation_dirs
 from hearth.safety.policy import ConfigView, Decision, PolicyRequest, SessionView, evaluate
 from hearth.tools.base import Prepared, Tool, ToolContext
 from hearth.tools.channel import ApprovalAsk, ApprovalReply, NullChannel, ToolChannel
-from hearth.tools.registry import ToolRegistry
+from hearth.tools.registry import ToolAvailability, ToolRegistry
 from hearth.tools.results import ErrorCode, ToolResult, unknown_tool
 
 #: Decides one prepared call. A closure rather than a bound object, so ``core`` can supply
@@ -89,6 +89,24 @@ class ToolGateway:
         self._policy = policy or default_policy()
         self._on_grant = on_grant
         self._session_id = session_id
+
+    def availability(
+        self,
+        mode: str,
+        *,
+        tool_reliability: str = "high",
+        max_tools: int | None = None,
+    ) -> ToolAvailability:
+        """Which tools a mode exposes.
+
+        Asked of the gateway rather than of a separately-held registry, so the schemas the
+        model is shown and the tools this gateway will accept are one selection rather than
+        two that agree. A frontend that switches mode — `/mode agent`, or `/plan` dropping
+        into read-only tools — has to re-ask, and this is where it asks.
+        """
+        return self._registry.for_mode(
+            mode, tool_reliability=tool_reliability, max_tools=max_tools
+        )
 
     async def call(
         self,
