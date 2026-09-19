@@ -189,3 +189,91 @@ def test_running_out_of_steps_is_not_a_success() -> None:
     """The mistake that would make a half-done change look finished."""
     assert not AgentTurnResult(answer="partial", reason="step_limit").ok
     assert not AgentTurnResult(answer="", reason="retry_budget").ok
+
+
+# ------------------------------------------------------------------- repo map
+
+
+class RecordingProvider(ScriptedProvider):
+    """Keeps the request so a test can inspect what the model was actually sent."""
+
+    def __init__(self) -> None:
+        super().__init__([ScriptedResponse("ok")])
+
+
+def build_map(connection) -> object:
+    from hearth.retrieval.repomap import RepoMapBuilder
+
+    return RepoMapBuilder(connection)
+
+
+@pytest.fixture
+def indexed_fixture_repo(tmp_path: Path):
+    """An indexed copy of py_small. A fixture, not inline setup, so the async tests below
+    do no blocking filesystem work of their own."""
+    import shutil
+
+    from hearth.indexing.pipeline import Indexer
+    from hearth.storage.db import connect
+    from hearth.storage.index_repo import IndexRepository
+    from hearth.storage.migrate import migrate
+
+    source = Path(__file__).resolve().parents[2] / "fixtures" / "repos" / "py_small"
+    shutil.copytree(source, tmp_path / "src_repo")
+    connection = connect(tmp_path / "index.db")
+    migrate(connection, database="index")
+    Indexer(root=tmp_path / "src_repo", repository=IndexRepository(connection)).run()
+    return connection
+
+
+async def test_the_repo_map_reaches_the_model(session: Session, indexed_fixture_repo) -> None:
+    """Wiring it into the runner is the whole point; an unused builder helps nobody."""
+    provider = RecordingProvider()
+    runner = ChatRunner(provider=provider, bus=EventBus(), repo_map=build_map(indexed_fixture_repo))
+
+    await runner.run_turn(session, "what is this repository?")
+
+    system = "\n".join(m.content for m in provider.requests[0].messages if m.role == "system")
+    assert "invoice_service.py" in system, "the map should describe the repository"
+
+
+async def test_the_map_is_built_once_per_epoch(session: Session, tmp_path: Path) -> None:
+    """It sits in the cached prefix: rebuilding it per turn would discard the KV cache."""
+    from hearth.storage.db import connect
+    from hearth.storage.migrate import migrate
+
+    connection = connect(tmp_path / "index.db")
+    migrate(connection, database="index")
+
+    builds = 0
+    real = build_map(connection)
+
+    class CountingBuilder:
+        def build(self, **kwargs):
+            nonlocal builds
+            builds += 1
+            return real.build(**kwargs)  # type: ignore[attr-defined]
+
+    runner = ChatRunner(provider=ScriptedProvider(), bus=EventBus(), repo_map=CountingBuilder())
+
+    await runner.run_turn(session, "one")
+    await runner.run_turn(session, "two")
+    assert builds == 1, "two turns in one epoch must reuse the map"
+
+    session.switch_mode(Mode.CHAT if session.mode is Mode.AGENT else Mode.AGENT)
+    await runner.run_turn(session, "three")
+    assert builds == 2, "a new epoch must rebuild it"
+
+
+async def test_a_failing_map_does_not_fail_the_turn(session: Session) -> None:
+    """The map is an aid. Losing it should cost context, not the user's turn."""
+
+    class Broken:
+        def build(self, **kwargs):
+            raise RuntimeError("index is corrupt")
+
+    runner = ChatRunner(provider=ScriptedProvider(), bus=EventBus(), repo_map=Broken())
+
+    result = await runner.run_turn(session, "still works?")
+
+    assert result.ok

@@ -17,10 +17,20 @@ checkpoints, exec tools, git writes and agent turns are in.
 ([docs/benchmarks/m6-task-eval.md](docs/benchmarks/m6-task-eval.md)); the M6 bar was ≥1/3. The live
 suite (`-m live`) is green except the embedding test.
 
-**Outstanding:** (1) **batch review** (§6.4) — needs a loop pre-pass that prepares every write in a
+**Phase 2 (I1) is underway.** `retrieval/repomap.py` is done and wired into `ChatRunner` behind a
+per-epoch cache: personalised PageRank over a use graph, budget-fitted by binary search over whole
+definitions. It lands at 1200/1200 tokens against a 1200 budget on this repository (the I1 bar is ±5%),
+and architecture questions now name real components across the codebase.
+
+**Outstanding in I1:** `retrieval/expansion.py` (parent skeletons, callee signatures, caller hints);
+grammars and queries for Go, Rust and Java (already declared in the `langs-extra` extra) plus structural
+support for C/C++/C#/Ruby/PHP; structured chunking for large JSON/YAML/TOML; and the "global questions"
+eval subset the acceptance criterion measures against.
+
+**Also outstanding:** (1) **batch review** (§6.4) — needs a loop pre-pass that prepares every write in a
 multi-write step and one review screen; `cli/approval.batch_blockers` is already written and tested,
 and the roadmap names this the first thing to cut. (2) **The 9b half of the task eval** — now possible,
-since the GPU works; it needs partial offload on a 6 GB card. (3) Phase 2 and Phase 3 are not started.
+since the GPU works. (3) I2–I4 and Phase 3 are not started.
 
 **The GPU works, after a fix worth remembering.** Ollama's device discovery was crashing
 (`0xc0000005`) on every backend because `llama-server.exe` loaded the old system
