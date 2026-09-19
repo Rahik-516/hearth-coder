@@ -78,10 +78,36 @@ wrong for a branch switch, where it re-parsed all 400 byte-identical files. `ind
 detection to the given paths — scoping matters, since `detect_changes` derives deletions from "indexed
 but not scanned", so handing it the full index against a subset would delete everything else.
 
-**Also outstanding:** (1) **batch review** (§6.4) — needs a loop pre-pass that prepares every write in a
-multi-write step and one review screen; `cli/approval.batch_blockers` is already written and tested,
-and the roadmap names this the first thing to cut. (2) **The 9b half of the task eval** — now possible,
-since the GPU works. (3) I3, I4 and Phase 3 are not started.
+**I3 is underway.** Plan mode has landed: `/plan <task>` investigates with read-only tools and returns
+a structured plan, `/execute` switches to agent mode and carries it out. The turn is deliberately **two
+requests** — an ordinary agent loop with no `format` set, then an extraction that asks for the schema
+with the tools removed. A schema present while the model is still searching pulls it towards answering
+from the question rather than from the code, which is the thing plan mode exists to prevent; the tests
+therefore assert on `provider.requests`, because a single-request design also produces a right-looking
+plan some of the time.
+
+**A plan's file list is an input to the permission system, written by a model.** `core/plan.py`
+`scope_grants` treats it as hostile — traversal, absolute paths, `~`, Windows separators and
+`.git/**` are dropped from the grant set while the step survives and simply asks. Approval and granting
+are two separate questions, so an approved plan is not a blanket edit permission, and grants are
+revoked by a superseding plan and by `/clear`. They are spelled `edit:<path>`, reusing the existing
+session-grant mechanism rather than adding a second one beside it.
+
+`multi_edit`, `move_file` and `delete_file` have landed too. `multi_edit` is atomic (edits compose in
+memory; any failure writes nothing), `move_file` checkpoints **both** ends, and `delete_file` moves to
+a timestamped directory under Hearth's trash rather than unlinking.
+
+**The `tools/` path-jail grep guard now exists.** It had been documented here for months and was never
+written. It passes with reviewed exemptions, one of which — `search.py`'s `_python_grep` fallback —
+records a real open gap rather than a clearance: it reads files found by `rglob` without going through
+`resolve_in_workspace`, so a symlink inside the workspace pointing outside it would be read and
+`is_sensitive_read` would never see the path.
+
+**Also outstanding:** (1) the rest of I3 — the five workflows (`/test`, `/doc`, `/review`, `/commit`,
+`/refactor`), batch approval UI, and growing the task eval to 10 tasks. (2) **batch review** (§6.4) —
+needs a loop pre-pass that prepares every write in a multi-write step and one review screen;
+`cli/approval.batch_blockers` is already written and tested. (3) **The 9b half of the task eval** — now
+possible, since the GPU works. (4) I4 and Phase 3 are not started.
 
 **The GPU works, after a fix worth remembering.** Ollama's device discovery was crashing
 (`0xc0000005`) on every backend because `llama-server.exe` loaded the old system
