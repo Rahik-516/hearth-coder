@@ -738,3 +738,62 @@ async def test_the_wrap_up_request_carries_no_tools_and_no_dangling_calls(
     wrap_up = provider.requests[-1]
     assert wrap_up.tools == []
     assert not any(m.role == "assistant" and m.tool_calls for m in wrap_up.messages[2:])
+
+
+# ------------------------------------------- every built tool reaches the model
+
+
+def test_every_registered_tool_is_exposed_in_some_mode() -> None:
+    """A tool the model never sees is a tool that does not exist.
+
+    Every M6 tool — run_command, run_tests, the four git writes, todo_write — was
+    registered and reachable through the gateway, yet absent from _MODE_TOOLS, so no
+    session ever offered one to a model. Nothing failed; the agent simply could not run a
+    test or make a commit, and the task eval's passes came from the harness running the
+    suite itself.
+    """
+    from hearth.tools.registry import _MODE_TOOLS, build_default_registry
+
+    registry = build_default_registry()
+    exposed = {name for names in _MODE_TOOLS.values() for name in names}
+
+    assert set(registry.names()) <= exposed, (
+        f"registered but unreachable: {sorted(set(registry.names()) - exposed)}"
+    )
+
+
+def test_agent_mode_can_edit_run_and_commit() -> None:
+    """The MVP loop is edit → test → fix → commit; each step needs its tool."""
+    from hearth.tools.registry import build_default_registry
+
+    names = set(build_default_registry().for_mode("agent").names)
+
+    assert {"edit_file", "run_tests", "run_command", "git_add", "git_commit"} <= names
+
+
+def test_chat_mode_still_exposes_no_write_or_exec_tool() -> None:
+    """Widening agent mode must not widen chat mode."""
+    from hearth.tools.base import Risk
+    from hearth.tools.registry import build_default_registry
+
+    registry = build_default_registry()
+
+    for tool in registry.for_mode("chat").tools:
+        assert tool.risk is Risk.READ, f"{tool.name} is reachable from chat mode"
+
+
+def test_a_cap_always_leaves_at_least_one_read_tool() -> None:
+    """`edit_file` with no `read_file` cannot satisfy read-before-write, so it cannot edit.
+
+    Agent mode carries ten non-read tools now; filling with those first left zero reads at
+    every realistic cap.
+    """
+    from hearth.tools.base import Risk
+    from hearth.tools.registry import build_default_registry
+
+    registry = build_default_registry()
+
+    for limit in range(1, 12):
+        tools = registry.for_mode("agent", max_tools=limit).tools
+        assert len(tools) <= limit
+        assert any(tool.risk is Risk.READ for tool in tools), f"no read tool at cap {limit}"

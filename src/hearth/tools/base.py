@@ -49,6 +49,9 @@ class ToolContext:
     index_connection: Any = None
     #: Retrieval engine, for `search_code`.
     retrieval_engine: Any = None
+    #: Blob store holding captured command output, for `read_output` to page through.
+    #: None means the session cannot page, and the tool says so rather than pretending.
+    blobs: Any = None
     #: Session-bound checkpoint writer, for the write tools. None disables checkpointing,
     #: which is why the write tools refuse to run without it — an unrevertable write is
     #: not a degraded write, it is a different and worse operation.

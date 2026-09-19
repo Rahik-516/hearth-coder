@@ -50,7 +50,7 @@ _MODE_TOOLS: dict[str, tuple[str, ...]] = {
     #
     # Reads come first deliberately: the schema order is part of the cached prompt prefix,
     # and the model should meet the tools that let it look before the ones that change
-    # things. `run_command` and the git write tools join this list in M6.
+    # things.
     "agent": (
         "read_file",
         "grep",
@@ -62,8 +62,16 @@ _MODE_TOOLS: dict[str, tuple[str, ...]] = {
         "git_status",
         "git_diff",
         "git_log",
+        "read_output",
+        "todo_write",
         "edit_file",
         "write_file",
+        "run_command",
+        "run_tests",
+        "git_add",
+        "git_commit",
+        "git_branch_create",
+        "git_switch",
     ),
 }
 
@@ -164,15 +172,22 @@ def _truncate(selected: list[Tool[Any]], limit: int) -> list[Tool[Any]]:
     So the cap drops reads from the end and keeps everything else. Order is otherwise
     preserved, because the schema list is part of the cached prompt prefix.
     """
-    keep = [tool for tool in selected if tool.risk is not Risk.READ]
-    if len(keep) >= limit:
-        # Pathological, and not silently resolved in favour of dropping a write tool:
-        # a limit this small is a misconfiguration, so honour it on the reads only.
-        return keep[:limit]
+    reads = [tool for tool in selected if tool.risk is Risk.READ]
+    others = [tool for tool in selected if tool.risk is not Risk.READ]
 
-    reads = [tool for tool in selected if tool.risk is Risk.READ][: limit - len(keep)]
-    kept = {id(tool) for tool in (*keep, *reads)}
-    return [tool for tool in selected if id(tool) in kept]
+    # A floor of reads is reserved before anything else is fitted. Agent mode now carries
+    # ten non-read tools, so filling with those first leaves zero reads at any realistic
+    # cap — handing the model `edit_file` with no `read_file`, which cannot satisfy
+    # read-before-write and so cannot edit anything at all.
+    floor = min(len(reads), max(1, limit // 3))
+    kept = [*reads[:floor], *others[: limit - floor]]
+
+    # Spend anything left over on more reads; they are the cheapest tools to carry.
+    if len(kept) < limit:
+        kept.extend(reads[floor : floor + (limit - len(kept))])
+
+    chosen = {id(tool) for tool in kept}
+    return [tool for tool in selected if id(tool) in chosen]
 
 
 def build_default_registry(
@@ -201,6 +216,7 @@ def build_default_registry(
         GitSwitchTool,
     )
     from hearth.tools.meta import TodoWriteTool
+    from hearth.tools.output import ReadOutputTool
     from hearth.tools.read_fs import FindFilesTool, ListDirTool, ReadFileTool
     from hearth.tools.search import (
         FindReferencesTool,
@@ -233,5 +249,6 @@ def build_default_registry(
             GitBranchCreateTool(),
             GitSwitchTool(),
             TodoWriteTool(),
+            ReadOutputTool(),
         ]
     )

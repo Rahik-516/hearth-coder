@@ -1,5 +1,26 @@
 # M6 task eval — results
 
+> **Correction (2026-09-20).** The runs below were measured with the M6 tools *registered
+> but not exposed*: `run_command`, `run_tests`, `todo_write` and the four git write tools
+> were missing from `_MODE_TOOLS["agent"]`, so no session ever offered one to a model. The
+> agent could edit files and nothing else. Passes were scored by the harness running the
+> suite itself, and any claim in a transcript that the model "ran the tests" was a
+> hallucination — it had no tool to run them with.
+>
+> Re-run with the tools actually reachable: **2 of 3 pass.** `add-unit-test` now fails,
+> writing a test that does not pass (1 failed, 9 passed); the other two are green in 19-24s.
+> Still above the M6 bar of >=1 of 3, but the earlier "3/3, the MVP loop works against a
+> real model" overstated what had been demonstrated. The loop had never run end to end.
+>
+> | Task | With tools exposed | Steps | Tools | Time |
+> |---|---|---|---|---|
+> | `add-unit-test` | FAIL — leaves a failing test | 10 | 9 | 50.3s |
+> | `rename-symbol` | PASS | 9 | 8 | 23.9s |
+> | `fix-failing-test` | PASS | 6 | 5 | 18.8s |
+>
+> A regression test now asserts every registered tool is exposed in some mode.
+
+
 **3 of 3 tasks passed** on `qwen3.5:4b`, twice: once on CPU, once on the GPU.
 
 The M6 criterion asked for ≥1 of 3. Two runs are recorded below. The second, on the GPU,

@@ -349,6 +349,7 @@ def _build_gateway(
         index_connection=index_connection,
         retrieval_engine=engine,
         checkpoints=checkpoints.bind(session.id),
+        blobs=BlobStore(paths.blobs_dir(root)),
     )
 
     return ToolGateway(

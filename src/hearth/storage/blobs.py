@@ -15,6 +15,7 @@ nothing here ever appears in the user's `git status`.
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from pathlib import Path
 
@@ -23,6 +24,19 @@ from hearth.util.hashing import blob_hash
 #: Hex characters used as the shard directory name. Two gives 256 buckets, which keeps
 #: any single directory small enough to list quickly on every filesystem Hearth targets.
 _SHARD = 2
+
+#: A digest is lowercase hex and nothing else.
+#:
+#: Enforced rather than assumed because the shard join — ``root / digest[:2] / digest`` —
+#: reads a digest as a *path*. While digests only ever came from :meth:`put` that was
+#: safe; once one can arrive from a model (``read_output`` pages by ``output_id``), a
+#: value like ``../../etc/passwd`` would walk straight out of the store. Validating here
+#: rather than at the call site means every caller is covered, including the next one.
+_DIGEST = re.compile(r"^[0-9a-f]{16,128}$")
+
+
+class InvalidDigestError(ValueError):
+    """A digest that is not a plain lowercase hex string."""
 
 
 class BlobStore:
@@ -36,11 +50,21 @@ class BlobStore:
         return self._root
 
     def path_for(self, digest: str) -> Path:
-        """Where a digest lives. Sharded by its first two characters."""
+        """Where a digest lives. Sharded by its first two characters.
+
+        Raises:
+            InvalidDigestError: for anything that is not lowercase hex. The join treats a
+                digest as a path, so this is a jail, not a formatting check.
+        """
+        if not _DIGEST.match(digest):
+            raise InvalidDigestError(f"not a digest: {digest!r}")
         return self._root / digest[:_SHARD] / digest
 
     def has(self, digest: str) -> bool:
-        return self.path_for(digest).is_file()
+        try:
+            return self.path_for(digest).is_file()
+        except InvalidDigestError:
+            return False
 
     def put(self, data: bytes) -> str:
         """Store bytes and return their digest. A no-op if already present.

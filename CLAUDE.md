@@ -13,9 +13,13 @@ checkpoints, exec tools, git writes and agent turns are in.
 `prompts/system_tools.md` + `mode_agent.md`, `ChatRunner.run_agent_turn`, `/mode agent`,
 `hearth run` with headless fail-closed, and the task-eval harness.
 
-**The MVP loop works against a real model.** `hearth eval tasks` scores **3/3** on `qwen3.5:4b`
-([docs/benchmarks/m6-task-eval.md](docs/benchmarks/m6-task-eval.md)); the M6 bar was ≥1/3. The live
-suite (`-m live`) is green except the embedding test.
+**The MVP loop scores 2/3** on `qwen3.5:4b` ([docs/benchmarks/m6-task-eval.md](docs/benchmarks/m6-task-eval.md));
+the M6 bar was ≥1/3. The live suite (`-m live`) is green. An earlier 3/3 was measured while the M6
+tools were registered but **not exposed** — absent from `_MODE_TOOLS["agent"]`, so no model was ever
+offered `run_tests`, `run_command`, `todo_write` or the git writes. The agent could only edit; the
+harness ran the suite. A test now asserts every registered tool is reachable in some mode, because
+nothing else failed when it was not — the tools worked, the gateway worked, and the model simply
+never saw them.
 
 **Phase 2 (I1) is underway.** `retrieval/repomap.py` is done and wired into `ChatRunner` behind a
 per-epoch cache: personalised PageRank over a use graph, budget-fitted by binary search over whole
