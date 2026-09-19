@@ -4,15 +4,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Current state
 
-**Scaffolded and verified, not implemented.** The package skeleton, tooling config and test harness are in
-place; `uv sync`, `pytest` (17 passed), `ruff check`, `mypy --strict` and `lint-imports` all run clean, and
-it's a git repo with the scaffold as the root commit. Every subpackage under `src/hearth/` is still an empty
-namespace waiting for its milestone.
+**Phase 0 through M6 (mostly) implemented.** The full unit suite, `ruff check`, `mypy src/hearth` and
+`lint-imports` all run clean under WSL2. Chat mode with RAG works; the safety spine, write tools,
+checkpoints, exec tools, git writes and agent turns are in.
 
-**Next: Phase 0 tasks 2–7** ([docs/implementation-roadmap.md](docs/implementation-roadmap.md)) — `config/`,
-then `llm/` (types, `LLMProvider`, `OllamaProvider`, `ScriptedProvider`, profiles), then `core/events.py`
-and `core/bus.py`, then `hearth doctor`, then the first fixture repos. The roadmap carries a starter prompt
-and acceptance criteria for each.
+**M6 is not finished.** Landed: the command classifier, environment scrubbing, `SubprocessRunner`,
+`run_command`, `run_tests`, `git_add`/`git_commit`/`git_branch_create`/`git_switch`, `todo_write`,
+`prompts/system_tools.md` + `mode_agent.md`, `ChatRunner.run_agent_turn` and `/mode agent`.
+**Outstanding:** `hearth run "<task>"` with `--headless` and the `--allow-*` flags, batch review (§6.4),
+`evals/task_eval.py` and `docs/benchmarks/m6-task-eval.md`. The roadmap names batch review as the first
+thing to cut if behind schedule.
+
+**One hard lesson, recorded because it cost the entire working tree.** A test in
+`tests/unit/tools/test_shell.py` once called `tool.prepare()` and `tool.execute()` directly — bypassing
+`ToolGateway` — to assert that the classifier flags `pytest; rm -rf ~`. The assertion was about a
+predicate, but with policy skipped the command *ran* and deleted `/home/hearth`, including the
+uncommitted M1–M6 work. Roughly 260 files were recovered from git objects found in the ext4 image; the
+rest was rewritten. The file now carries two standing rules in its header: **nothing executes except
+through the gateway, and every adversarial payload is inert.** The path tools may use the
+prepare/execute shortcut safely because `resolve_in_workspace` jails them; a command string has no jail,
+so for exec, policy *is* the containment. Commit before any risky step.
 
 **Toolchain lives under `E:\DevTools\`, one subdirectory per tool** — `uv\`, `Git\`, `Ollama\`, matching the
 existing convention. `uv`'s own Python installs and cache also live under `E:\DevTools\uv\python` and
