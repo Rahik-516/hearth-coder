@@ -18,9 +18,11 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 import numpy as np
 
+from hearth.core.agent_loop import AgentLoop
 from hearth.core.bus import EventBus
 from hearth.core.context.budget import budget_for
 from hearth.core.context.builder import BuiltRequest, ContextBuilder
@@ -37,15 +39,70 @@ from hearth.core.events import (
     TurnFinished,
     TurnStarted,
 )
+from hearth.core.limits import TurnLimits
 from hearth.core.session import Session
 from hearth.llm.errors import LLMError
 from hearth.llm.provider import LLMProvider
-from hearth.llm.types import ChatRequest, Sampling
+from hearth.llm.types import ChatRequest, Sampling, ThinkLevel
 from hearth.prompts import system_prompt_for
 from hearth.retrieval.engine import RetrievalEngine, RetrievalResult
+from hearth.tools.gateway import ToolGateway
 
 #: Produces a query vector for dense retrieval.
 QueryEmbedder = Callable[[str], Awaitable[np.ndarray]]
+
+#: Loop reasons that mean the turn finished on its own terms. Everything else — a step
+#: limit, an exhausted retry budget, repeated failures — is a turn that stopped early.
+_AGENT_SUCCESS_REASONS = frozenset({"answered", "stop", ""})
+
+
+def _agent_reason(reason: str) -> str:
+    return "answered" if reason in _AGENT_SUCCESS_REASONS else reason
+
+
+@dataclass
+class AgentTurnResult:
+    """What one agent turn produced.
+
+    Separate from :class:`TurnResult` because the interesting failures differ: a chat turn
+    either answered or did not, while an agent turn can end because it ran out of steps,
+    kept failing, or had everything it wanted to do refused — and "stopped at the step
+    limit" needs to be distinguishable from "finished", or a caller reports a half-done
+    change as a success.
+    """
+
+    answer: str
+    thinking: str = ""
+    reason: str = "answered"
+    steps: int = 0
+    tool_calls: int = 0
+    duration_ms: float = 0.0
+
+    @property
+    def ok(self) -> bool:
+        """Whether the turn actually finished.
+
+        Deliberately **not** ``_turn_reason``, which normalises *provider* stop words. A
+        loop reason like ``step_limit`` is Hearth's own, and passing it through that
+        mapping reports a turn that ran out of steps as "answered" — the one error here
+        that would make a half-done change look finished.
+        """
+        return _agent_reason(self.reason) == "answered"
+
+    def summary(self) -> str:
+        """The ``run_result`` line every exit path prints (§14.1).
+
+        Printed on success *and* on every failure, because the common headless outcome is
+        under-granting: a run that denied six calls and answered anyway is not a success,
+        and without this the only way to find that out is to re-read the transcript.
+        """
+        parts = [
+            f"reason={_agent_reason(self.reason)}",
+            f"steps={self.steps}",
+            f"tool_calls={self.tool_calls}",
+            f"duration={self.duration_ms / 1000:.1f}s",
+        ]
+        return f"run_result: {' '.join(parts)}"
 
 
 @dataclass
@@ -143,6 +200,89 @@ class ChatRunner:
             )
         )
         return result
+
+    async def run_agent_turn(
+        self,
+        session: Session,
+        user_text: str,
+        *,
+        gateway: ToolGateway,
+        tool_schemas: list[dict[str, Any]],
+        limits: TurnLimits | None = None,
+        think: ThinkLevel = "off",
+    ) -> AgentTurnResult:
+        """Run one agent turn: retrieve, build, then loop with tools until it answers.
+
+        Deliberately a method on this class rather than a second runner. The prefix is
+        cache-stable only if exactly one piece of code decides its layout — system prompt,
+        project instructions, append-only history, then the user message carrying the
+        retrieved context (docs/system-design.md §9.2). A separate agent runner would be a
+        second implementation of that layout, and the two would drift by a word, which is
+        all it takes: measured on the reference machine, a reused prefix prefills 28x
+        faster than a cold one.
+
+        Retrieval still happens once, up front, even though the loop can also search. The
+        first search is nearly always worth it, and the loop's own `grep` calls are for
+        following up on what the context showed rather than for starting from nothing.
+        """
+        started = time.perf_counter()
+        await self._bus.publish(
+            TurnStarted(session_id=session.id, mode=session.mode.value, model=session.model)
+        )
+
+        loop = AgentLoop(
+            provider=self._provider,
+            gateway=gateway,
+            bus=self._bus,
+            limits=limits,
+            tool_schemas=tool_schemas,
+        )
+
+        try:
+            retrieval = await self._retrieve(session, user_text)
+            built = self._build(session, user_text, retrieval)
+            base = ChatRequest(
+                model=session.model,
+                messages=built.messages,
+                num_ctx=session.num_ctx,
+                # Passed in rather than derived from the mode: whether a model should think
+                # is a property of the model's profile, which this layer cannot see.
+                think=think,
+            )
+            outcome = await loop.run(base_request=base, on_text=self._emit_text)
+        except asyncio.CancelledError:
+            await self._bus.publish(TurnFinished(session_id=session.id, reason="aborted", steps=1))
+            raise
+        except LLMError as exc:
+            await self._bus.publish(ErrorEvent(message=str(exc)))
+            await self._bus.publish(TurnFinished(session_id=session.id, reason="error", steps=1))
+            return AgentTurnResult(
+                answer="", reason="error", duration_ms=_ms_since(started), steps=1
+            )
+
+        session.add_user(user_text)
+        session.add_assistant(outcome.answer, thinking=outcome.thinking or None)
+
+        duration = _ms_since(started)
+        await self._bus.publish(
+            TurnFinished(
+                session_id=session.id,
+                reason=_turn_reason(outcome.reason),
+                steps=outcome.steps,
+                duration_ms=duration,
+            )
+        )
+        return AgentTurnResult(
+            answer=outcome.answer,
+            thinking=outcome.thinking,
+            reason=outcome.reason,
+            steps=outcome.steps,
+            tool_calls=outcome.tool_calls,
+            duration_ms=duration,
+        )
+
+    async def _emit_text(self, delta: str) -> None:
+        await self._bus.publish(TextDelta(text=delta))
 
     # -------------------------------------------------------------- internals
 

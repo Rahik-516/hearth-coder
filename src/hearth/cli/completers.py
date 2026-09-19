@@ -18,6 +18,7 @@ SLASH_COMMANDS: dict[str, str] = {
     "/help": "show available commands",
     "/context": "show context budget usage",
     "/model": "show or switch the chat model",
+    "/mode": "show or switch mode: chat or agent",
     "/clear": "clear this session's history",
     "/sources": "show the context retrieved for the last turn",
     "/thinking": "toggle showing the model's reasoning",

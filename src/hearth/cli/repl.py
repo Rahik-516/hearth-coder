@@ -30,10 +30,11 @@ from hearth.cli.render import ChatRenderer
 from hearth.core.bus import EventBus
 from hearth.core.context.budget import budget_for
 from hearth.core.events import RetrievalPerformed
-from hearth.core.runner import ChatRunner
-from hearth.core.session import Session, SessionStore
+from hearth.core.runner import AgentTurnResult, ChatRunner, TurnResult
+from hearth.core.session import Mode, Session, SessionStore
 from hearth.llm.types import Message
 from hearth.safety.checkpoints import CheckpointStore
+from hearth.tools.gateway import ToolGateway
 
 _BANNER = """[bold]Hearth[/bold] — ask about this repository.
 [dim]/help for commands · @path to pin a file · Ctrl+C cancels a reply · Ctrl+D exits[/dim]"""
@@ -54,6 +55,10 @@ class ChatREPL:
     workspace: Path | None = None
     #: None disables /undo, /rewind and /checkpoints rather than faking them.
     checkpoints: CheckpointStore | None = None
+    #: None disables `/mode agent`, for the same reason: a mode that claims tools and has
+    #: none would let the model propose edits that silently never happen.
+    gateway: ToolGateway | None = None
+    tool_schemas: list[dict[str, object]] = field(default_factory=list)
 
     _renderer: ChatRenderer = field(init=False)
     _last_sources: list[RetrievalPerformed] = field(default_factory=list, init=False)
@@ -111,7 +116,7 @@ class ChatREPL:
 
         self.store.set_title_from(self.session, message)
 
-        task = asyncio.create_task(self.runner.run_turn(self.session, message))
+        task = asyncio.create_task(self._turn(message))
         try:
             result = await asyncio.shield(task)
         except KeyboardInterrupt:
@@ -130,7 +135,23 @@ class ChatREPL:
             self.store.save_message(self.session, Message(role="user", content=message))
             self.store.save_message(self.session, Message(role="assistant", content=result.answer))
 
+        if isinstance(result, AgentTurnResult):
+            # Printed whether or not the turn succeeded: a run that stopped at the step
+            # limit, or had its edits refused, looks like a finished one otherwise (§14.1).
+            self.console.print(f"[dim]{result.summary()}[/dim]")
+
         self.console.print()
+
+    async def _turn(self, message: str) -> TurnResult | AgentTurnResult:
+        """Route the turn by mode. Chat has no tools; agent drives the loop."""
+        if self.session.mode is Mode.AGENT and self.gateway is not None:
+            return await self.runner.run_agent_turn(
+                self.session,
+                message,
+                gateway=self.gateway,
+                tool_schemas=list(self.tool_schemas),
+            )
+        return await self.runner.run_turn(self.session, message)
 
     def _capture_sources(self, event: object) -> None:
         if isinstance(event, RetrievalPerformed):
@@ -157,6 +178,8 @@ class ChatREPL:
                 self.console.print("[dim]history cleared[/dim]")
             case "/model":
                 self._show_or_set_model(argument)
+            case "/mode":
+                self._show_or_set_mode(argument)
             case "/thinking":
                 self._renderer.show_thinking = not self._renderer.show_thinking
                 state = "on" if self._renderer.show_thinking else "off"
@@ -258,6 +281,45 @@ class ChatREPL:
             self.console.print(
                 f"  [cyan]{source.path}:{source.start_line}-{source.end_line}[/cyan]"
                 f"  [dim]{source.retriever or ''}[/dim]"
+            )
+
+    def _show_or_set_mode(self, argument: str) -> None:
+        """Show the mode, or switch it.
+
+        Switching to agent is refused when no gateway was supplied, rather than switching
+        and quietly having no tools: a model told it can edit files will propose edits, and
+        every one of them would vanish.
+        """
+        if not argument:
+            self.console.print(f"[dim]mode: {self.session.mode.value}[/dim]")
+            return
+
+        try:
+            mode = Mode(argument)
+        except ValueError:
+            allowed = ", ".join(item.value for item in Mode)
+            self.console.print(f"[yellow]unknown mode {argument!r}[/yellow] — one of: {allowed}")
+            return
+
+        if mode is Mode.AGENT and self.gateway is None:
+            self.console.print(
+                "[yellow]agent mode is unavailable in this session[/yellow] — it needs a "
+                "tool gateway, which requires an indexed workspace"
+            )
+            return
+        if mode is Mode.PLAN:
+            self.console.print("[yellow]plan mode arrives in I3[/yellow] — use chat or agent")
+            return
+
+        previous = self.session.mode
+        self.session.switch_mode(mode)
+        self.console.print(
+            f"[dim]mode: {previous.value} → {mode.value} "
+            "(new cache epoch; the next turn re-prefills)[/dim]"
+        )
+        if mode is Mode.AGENT:
+            self.console.print(
+                "[dim]edits, commands and commits will ask before they happen[/dim]"
             )
 
     def _show_or_set_model(self, argument: str) -> None:
