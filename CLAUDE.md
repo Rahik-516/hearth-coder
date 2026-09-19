@@ -13,12 +13,26 @@ checkpoints, exec tools, git writes and agent turns are in.
 `prompts/system_tools.md` + `mode_agent.md`, `ChatRunner.run_agent_turn`, `/mode agent`,
 `hearth run` with headless fail-closed, and the task-eval harness.
 
+**The MVP loop works against a real model.** `hearth eval tasks` scores **3/3** on `qwen3.5:4b`
+([docs/benchmarks/m6-task-eval.md](docs/benchmarks/m6-task-eval.md)); the M6 bar was ≥1/3. The live
+suite (`-m live`) is green except the embedding test.
+
 **Outstanding:** (1) **batch review** (§6.4) — needs a loop pre-pass that prepares every write in a
-multi-write step and one review screen; `cli/approval.batch_blockers` is already written and tested, and
-the roadmap names this the first thing to cut. (2) **Task-eval numbers** — the harness runs, but
-`GET /api/tags` returns `{"models":[]}`; pull `qwen3.5:4b` and record results in
-[docs/benchmarks/m6-task-eval.md](docs/benchmarks/m6-task-eval.md). (3) **No live end-to-end has ever
-run** — every test uses `ScriptedProvider`, so the loop has not met a real model since the rebuild.
+multi-write step and one review screen; `cli/approval.batch_blockers` is already written and tested,
+and the roadmap names this the first thing to cut. (2) **`ollama pull qwen3-embedding:0.6b`** — without
+it retrieval is lexical-only, `hearth doctor` fails one check and one live test fails. (3) **The 9b
+half of the task eval**, which needs the GPU.
+
+**The GPU is not being used, and it is not Hearth's fault.** `nvidia-smi` shows the RTX 3060 idle with
+~6 GB free, but Ollama's `llama-server --list-devices` crashes (`0xc0000005`) for every backend, so it
+registers `total_vram=0` and runs 100% on CPU — see `%LOCALAPPDATA%\Ollama\server.log`. Everything works,
+about 10x slower. `hearth doctor` now names this specifically rather than suggesting a smaller model.
+
+**Run the tests the way CLAUDE.md documents.** `uv run pytest -q` was broken for months — it collected
+the fixture repos' own suites and died on import — and nobody noticed because every session ran
+`pytest tests/unit` instead. The integration tests were never executed at all, and they were hiding a
+real bug (re-indexing raised "cannot start a transaction within a transaction"). Narrow commands give
+narrow assurances.
 
 **One hard lesson, recorded because it cost the entire working tree.** A test in
 `tests/unit/tools/test_shell.py` once called `tool.prepare()` and `tool.execute()` directly — bypassing
