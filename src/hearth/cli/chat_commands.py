@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -23,20 +24,36 @@ from hearth.config import paths
 from hearth.config.errors import ConfigError
 from hearth.config.loader import LoadedConfig, load_config
 from hearth.core.bus import EventBus
-from hearth.core.runner import ChatRunner, QueryEmbedder
+from hearth.core.limits import TurnLimits
+from hearth.core.runner import AgentTurnResult, ChatRunner, QueryEmbedder
 from hearth.core.session import Mode, Session, SessionStore
+from hearth.core.tool_channel import EventBusChannel
 from hearth.indexing.embedder import Embedder
 from hearth.llm.errors import LLMError, ProviderConfigError
 from hearth.llm.ollama_provider import OllamaProvider
 from hearth.llm.profiles import ProfileRegistry
 from hearth.llm.types import Message
 from hearth.retrieval.engine import RetrievalEngine
+from hearth.safety.audit import AuditLog
 from hearth.safety.checkpoints import CheckpointStore
+from hearth.safety.invariants import privilege_escalation_dirs
+from hearth.safety.policy import (
+    ConfigView,
+    Decision,
+    PolicyRequest,
+    SessionView,
+    evaluate,
+)
+from hearth.safety.rules import compile_rules
 from hearth.storage.blobs import BlobStore
 from hearth.storage.db import connect
 from hearth.storage.migrate import migrate
 from hearth.storage.state_repo import StateRepository
 from hearth.storage.vector_index import NumpyVectorIndex
+from hearth.tools.base import ToolContext
+from hearth.tools.channel import ApprovalAsk, ApprovalReply
+from hearth.tools.gateway import ToolGateway
+from hearth.tools.registry import build_default_registry
 
 console = Console()
 
@@ -45,6 +62,7 @@ def register(app: typer.Typer) -> None:
     app.command()(chat)
     app.command()(resume)
     app.command()(ask)
+    app.command()(run)
 
 
 def _open_state(root: Path) -> StateRepository:
@@ -266,3 +284,188 @@ def ask(
         raise typer.Exit(1) from exc
 
     raise typer.Exit(0 if answer else 1)
+
+
+# ------------------------------------------------------------------------ run
+
+
+def _build_gateway(
+    root: Path,
+    loaded: LoadedConfig,
+    *,
+    session: Session,
+    bus: EventBus,
+    checkpoints: CheckpointStore,
+    index_connection: sqlite3.Connection | None,
+    engine: RetrievalEngine | None,
+    headless: bool,
+    allow_edits: bool,
+    allow_tests: bool,
+    allow_commit: bool,
+) -> ToolGateway:
+    """Assemble the gateway for an agent session.
+
+    The ``--allow-*`` flags are deliberately narrow: each widens exactly one risk class in
+    headless mode and nothing else (docs/safety-and-tool-use.md §14). There is no
+    ``--allow-all``, because the flag a user types is the only record of what they
+    consented to before walking away.
+    """
+    grants: set[str] = set()
+
+    def policy(request: PolicyRequest) -> Decision:
+        # Rebuilt per call so a grant added mid-run is visible to the next one.
+        return evaluate(
+            request,
+            SessionView(
+                mode=session.mode.value,
+                level=session.permission_level.value,
+                headless=headless,
+                grants=frozenset(grants),
+            ),
+            ConfigView(
+                rules=compile_rules(loaded.config.permissions, source="global"),
+                protected_dirs=privilege_escalation_dirs(),
+                headless_allow_edits=allow_edits,
+                headless_allow_tests=allow_tests,
+                headless_allow_commit=allow_commit,
+            ),
+        )
+
+    context = ToolContext(
+        workspace=root,
+        index_connection=index_connection,
+        retrieval_engine=engine,
+        checkpoints=checkpoints.bind(session.id),
+    )
+
+    return ToolGateway(
+        registry=build_default_registry(
+            test_command=loaded.config.project.test_command,
+            test_command_source=str(paths.project_config_file(root))
+            if loaded.config.project.test_command
+            else None,
+        ),
+        context=context,
+        channel=_HeadlessChannel(bus) if headless else EventBusChannel(bus),
+        audit=AuditLog(paths.audit_dir()),
+        policy=policy,
+        on_grant=grants.add,
+        session_id=session.id,
+    )
+
+
+class _HeadlessChannel(EventBusChannel):
+    """Reports progress but never obtains an approval.
+
+    The policy engine already converts an ask into a deny in headless mode, so this should
+    be unreachable. It exists because "should be unreachable" is not a safety property: if
+    some path ever does request an approval with nobody there to answer, the alternatives
+    are denying it or waiting forever on a bus nobody is listening to.
+    """
+
+    async def request_approval(self, ask: ApprovalAsk) -> ApprovalReply | None:
+        return None
+
+
+def run(
+    task: str = typer.Argument(..., help="What you want done, in a sentence or two."),
+    workspace: Path = typer.Option(None, "--workspace", "-w", help="Repository to work in."),
+    model: str = typer.Option(None, "--model", "-m", help="Override the chat model."),
+    headless: bool = typer.Option(
+        False, "--headless", help="Run without prompts. Every side effect is denied unless allowed."
+    ),
+    allow_edits: bool = typer.Option(False, "--allow-edits", help="Headless: permit file edits."),
+    allow_tests: bool = typer.Option(
+        False, "--allow-tests", help="Headless: permit running commands and tests."
+    ),
+    allow_commit: bool = typer.Option(False, "--allow-commit", help="Headless: permit git writes."),
+    max_steps: int = typer.Option(None, "--max-steps", help="Override the model profile's step limit."),
+) -> None:
+    """Carry out a task: edit, run tests, and stop for approval before each side effect.
+
+    Interactive by default. ``--headless`` fails closed — it does not skip approvals, it
+    refuses everything that would have needed one, and names the flag that would have
+    permitted it. That asymmetry is the point: an unattended run that quietly edits files
+    is the failure mode the flags exist to prevent.
+    """
+    root = _resolve_root(workspace)
+    loaded = _load(root)
+    _warn_if_unindexed(root)
+
+    try:
+        provider, engine, embed_query, index_connection = _build_runtime(root, loaded)
+    except ProviderConfigError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+
+    state = _open_state(root)
+    store = SessionStore(state)
+    session = store.create(
+        workspace=root,
+        model=model or loaded.config.models.chat,
+        num_ctx=loaded.config.models.num_ctx,
+        mode=Mode.AGENT,
+    )
+    store.set_title_from(session, task)
+
+    bus = EventBus()
+    bus.subscribe(ChatRenderer(console=console))
+    if not headless:
+        bus.subscribe(ApprovalPrompt(bus=bus, console=console))
+
+    checkpoints = CheckpointStore(store.repo, BlobStore(paths.blobs_dir(root)))
+    gateway = _build_gateway(
+        root,
+        loaded,
+        session=session,
+        bus=bus,
+        checkpoints=checkpoints,
+        index_connection=index_connection,
+        engine=engine,
+        headless=headless,
+        allow_edits=allow_edits,
+        allow_tests=allow_tests,
+        allow_commit=allow_commit,
+    )
+
+    profile = ProfileRegistry.load().for_model(session.model)
+    limits = TurnLimits.from_profile(profile, session.mode.value)
+    if max_steps:
+        limits = replace(limits, max_steps=max_steps)
+
+    runner = ChatRunner(provider=provider, bus=bus, engine=engine, embed_query=embed_query)
+    availability = build_default_registry(
+        test_command=loaded.config.project.test_command
+    ).for_mode(session.mode.value, tool_reliability=profile.tool_reliability)
+
+    async def main() -> AgentTurnResult:
+        try:
+            return await runner.run_agent_turn(
+                session,
+                task,
+                gateway=gateway,
+                tool_schemas=availability.schemas,
+                limits=limits,
+                think="medium" if profile.supports_thinking else "off",
+            )
+        finally:
+            await bus.close()
+            await provider.close()
+
+    try:
+        result = asyncio.run(main())
+    except LLMError as exc:
+        console.print(f"[red]{exc}[/red]")
+        # Printed even here: §14.1 asks for the summary on every exit path, and "it died
+        # three steps in" is the part a user needs when a run fails.
+        console.print("[dim]run_result: reason=error steps=0 tool_calls=0[/dim]")
+        raise typer.Exit(1) from exc
+
+    if result.answer:
+        store.save_message(session, Message(role="user", content=task))
+        store.save_message(session, Message(role="assistant", content=result.answer))
+
+    console.print(f"\n[dim]{result.summary()} · session {session.id}[/dim]")
+    if not result.ok:
+        console.print("[dim]`hearth undo` reverts the file changes from this run.[/dim]")
+    raise typer.Exit(0 if result.ok else 1)
