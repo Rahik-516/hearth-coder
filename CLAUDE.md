@@ -22,10 +22,24 @@ per-epoch cache: personalised PageRank over a use graph, budget-fitted by binary
 definitions. It lands at 1200/1200 tokens against a 1200 budget on this repository (the I1 bar is ±5%),
 and architecture questions now name real components across the codebase.
 
-**Outstanding in I1:** `retrieval/expansion.py` (parent skeletons, callee signatures, caller hints);
-grammars and queries for Go, Rust and Java (already declared in the `langs-extra` extra) plus structural
-support for C/C++/C#/Ruby/PHP; structured chunking for large JSON/YAML/TOML; and the "global questions"
-eval subset the acceptance criterion measures against.
+`retrieval/expansion.py` is done too: parent skeletons, callee signatures and caller hints, all
+signature-only, wired into the engine after diversity. A callee name defined in more than one file is
+skipped rather than guessed — a wrong signature is worse than none, since the model cannot tell.
+
+**The eval data was lost in the disaster and is restored.** `evals/retrieval/` was empty, so
+`hearth eval retrieval` could not run at all. `py_small.yaml` is rebuilt, and `global_questions.yaml`
+is the I1 acceptance subset — architecture questions, run against Hearth itself because a 10-file
+fixture has no architecture to ask about. Baseline: **recall@10 0.90** (bar is 0.80).
+
+Its header states the labelling rule, which matters: **a file counts as ground truth if a developer
+reading it would learn the answer, including documentation.** The first run marked
+`docs/system-design.md` a miss for "what are the main components", which measured the labels rather
+than retrieval. The rule cuts both ways — same-package neighbours that do not answer the question are
+still misses, and one remains.
+
+**Outstanding in I1:** grammars and queries for Go, Rust and Java (already declared in the
+`langs-extra` extra) plus structural support for C/C++/C#/Ruby/PHP; structured chunking for large
+JSON/YAML/TOML.
 
 **Also outstanding:** (1) **batch review** (§6.4) — needs a loop pre-pass that prepares every write in a
 multi-write step and one review screen; `cli/approval.batch_blockers` is already written and tested,

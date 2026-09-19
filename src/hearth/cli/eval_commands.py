@@ -57,6 +57,9 @@ eval_app = typer.Typer(help="Measure retrieval and model quality.", no_args_is_h
 EVAL_SETS: dict[str, tuple[str, str]] = {
     "py_small": ("tests/fixtures/repos/py_small", "evals/retrieval/py_small.yaml"),
     "ts_small": ("tests/fixtures/repos/ts_small", "evals/retrieval/ts_small.yaml"),
+    # The I1 acceptance subset. Runs against Hearth itself rather than a fixture: these
+    # are architecture questions, and a 10-file fixture has no architecture to ask about.
+    "global": (".", "evals/retrieval/global_questions.yaml"),
 }
 
 

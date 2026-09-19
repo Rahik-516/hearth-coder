@@ -1,0 +1,74 @@
+# Retrieval questions for tests/fixtures/repos/py_small.
+#
+# Ground truth is the file (and where it is unambiguous, the symbol) a correct answer has
+# to reach. Questions are phrased the way a developer would actually ask them, including
+# the vague ones — a set of keyword queries would measure BM25 and call it retrieval.
+#
+# `kind` records what the question is testing, so a regression can be read as "symbol
+# lookup got worse" rather than "the number went down":
+#   symbol      — names an identifier directly
+#   conceptual  — describes behaviour without naming it
+#   path        — asks about a file or area
+#   usage       — asks where something is used
+
+questions:
+  - question: Where is the rounding done when an invoice is finalized?
+    files: [src/billing/invoice_service.py]
+    symbols: [finalize]
+    kind: conceptual
+    note: The half-up rounding lives in a private helper, so the obvious keyword misses.
+
+  - question: InvoiceService.compute_tax
+    files: [src/billing/invoice_service.py]
+    symbols: [compute_tax]
+    kind: symbol
+
+  - question: How is the tax rate looked up for a country?
+    files: [src/billing/invoice_service.py]
+    symbols: [rate_for]
+    kind: conceptual
+
+  - question: What happens when a payment is declined?
+    files: [src/billing/payments.py]
+    symbols: [PaymentDeclined]
+    kind: conceptual
+
+  - question: TokenBucket
+    files: [src/billing/payments.py]
+    symbols: [TokenBucket]
+    kind: symbol
+
+  - question: How does the retry logic back off between attempts?
+    files: [src/billing/payments.py]
+    symbols: [with_retries]
+    kind: conceptual
+    note: Exponential backoff with jitter; "retry" appears in several files.
+
+  - question: Which statuses can an invoice have?
+    files: [src/billing/models.py]
+    symbols: [InvoiceStatus]
+    kind: conceptual
+
+  - question: What fields does a line item have?
+    files: [src/billing/models.py]
+    symbols: [LineItem]
+    kind: conceptual
+
+  - question: How is a monthly statement built?
+    files: [src/billing/statements.py]
+    symbols: [build_monthly_statement]
+    kind: conceptual
+
+  - question: What errors can billing raise?
+    files: [src/billing/errors.py]
+    kind: path
+
+  - question: Where is finalize called from?
+    files: [src/billing/invoice_service.py]
+    symbols: [finalize]
+    kind: usage
+
+  - question: How are invoices stored and retrieved?
+    files: [src/billing/invoice_service.py]
+    symbols: [InvoiceRepository]
+    kind: conceptual

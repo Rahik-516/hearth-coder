@@ -1,0 +1,105 @@
+# Global questions — the I1 acceptance subset (docs/implementation-roadmap.md).
+#
+# These ask about the repository as a whole: what the components are, how they interact,
+# where a concern lives. They are the questions the repo map exists for, and the ones
+# chunk-level retrieval answers worst, because no single chunk contains the answer. A
+# correct response has to draw on several files at once.
+#
+# Ground truth here is deliberately a *set* of files rather than one. Unlike a symbol
+# lookup there is no single right chunk, so recall over the set is the honest measure: a
+# retriever that finds one of five relevant modules has not answered the question.
+#
+# **A file counts if a developer reading it would learn the answer** — including design
+# documentation. The first run of this set marked docs/system-design.md as a miss for "what
+# are the main components", which is backwards: §3 of that document answers the question
+# better than any source file does, and a user who received it would be well served.
+# Labelling it wrong would have measured the labels, not retrieval.
+#
+# The rule cuts both ways, and the entries below are not simply whatever retrieval
+# returned. For "how does retrieval combine its different signals" the run offered
+# repomap.py, types.py and expansion.py — neighbours in the same package that do not answer
+# the question — and those remain misses.
+#
+# Run against the Hearth repository itself, which is large enough for the distinction
+# between "found the file" and "understood the architecture" to be real. That is a
+# deliberate exception to developing against fixtures: a 10-file fixture has no
+# architecture to ask about.
+
+questions:
+  - question: What are the main components of this system and how do they interact?
+    files:
+      - src/hearth/core/runner.py
+      - src/hearth/retrieval/engine.py
+      - src/hearth/tools/gateway.py
+      - src/hearth/safety/policy.py
+      - docs/system-design.md
+    kind: conceptual
+    note: |
+      The layering question. No single chunk contains it, and system-design.md §3
+      answers it more directly than any one module does.
+
+  - question: How does a tool call get approved or refused?
+    files:
+      - src/hearth/tools/gateway.py
+      - src/hearth/safety/policy.py
+      - src/hearth/cli/approval.py
+    kind: conceptual
+
+  - question: What stops the agent from running a destructive shell command?
+    files:
+      - src/hearth/safety/command_classifier.py
+      - src/hearth/safety/policy.py
+      - src/hearth/safety/invariants.py
+    kind: conceptual
+
+  - question: How is a file edit made reversible?
+    files:
+      - src/hearth/safety/checkpoints.py
+      - src/hearth/tools/write_fs.py
+      - src/hearth/storage/blobs.py
+    kind: conceptual
+
+  - question: How does retrieval combine its different signals?
+    files:
+      - src/hearth/retrieval/engine.py
+      - src/hearth/retrieval/fusion.py
+      - src/hearth/retrieval/retrievers.py
+      - docs/system-design.md
+    kind: conceptual
+
+  - question: What is stored in SQLite and how is the schema managed?
+    files:
+      - src/hearth/storage/migrate.py
+      - src/hearth/storage/index_repo.py
+      - src/hearth/storage/state_repo.py
+      - docs/adr/0001-sqlite-numpy-vector-search.md
+    kind: conceptual
+    note: The ADR explains the choice; migrate.py is how the schema is managed.
+
+  - question: How does the prompt stay stable so the KV cache is reused?
+    files:
+      - src/hearth/core/context/builder.py
+      - src/hearth/core/context/budget.py
+      - src/hearth/core/session.py
+    kind: conceptual
+
+  - question: Where does the code talk to the model, and what enforces that it stays local?
+    files:
+      - src/hearth/llm/ollama_provider.py
+      - src/hearth/llm/guards.py
+      - src/hearth/llm/provider.py
+    kind: conceptual
+
+  - question: How does indexing decide what to include and how files are split?
+    files:
+      - src/hearth/indexing/pipeline.py
+      - src/hearth/indexing/chunker.py
+      - src/hearth/indexing/filters.py
+    kind: conceptual
+
+  - question: What happens across one agent turn from prompt to answer?
+    files:
+      - src/hearth/core/agent_loop.py
+      - src/hearth/core/runner.py
+      - src/hearth/core/limits.py
+    kind: conceptual
