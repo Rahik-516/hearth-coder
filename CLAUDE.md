@@ -37,9 +37,21 @@ reading it would learn the answer, including documentation.** The first run mark
 than retrieval. The rule cuts both ways — same-package neighbours that do not answer the question are
 still misses, and one remains.
 
-**Outstanding in I1:** grammars and queries for Go, Rust and Java (already declared in the
-`langs-extra` extra) plus structural support for C/C++/C#/Ruby/PHP; structured chunking for large
-JSON/YAML/TOML.
+**Go, Rust and Java are at FULL support**, with vendored `tags.scm` queries and a
+`tests/fixtures/repos/polyglot` fixture. They live in the optional `langs-extra` extra, so run
+`uv sync --extra langs-extra` (or `uv run --extra langs-extra …`) to exercise them — a plain `uv run`
+re-syncs to the default set and removes them, and the tests then skip rather than fail.
+
+`GRAMMAR_AVAILABLE` used to be a hardcoded frozenset, so an optional grammar could never register:
+the query loaded, the grammar imported, and parsing still returned `skipped`. Availability is now
+derived from `GRAMMAR_MODULES` in `languages.py` via `find_spec`, which is also the single source of
+truth `parser.py` loads through.
+
+**Outstanding in I1:** structural support for C/C++/C#/Ruby/PHP (needs grammars none of the extras
+ship), and **structured chunking for large JSON/YAML/TOML** — the last item. Those languages are
+`DATA` level with no grammar, so they fall to the window chunker today. The awkward part is line
+numbers: `json` and `tomllib` do not report positions, and PyYAML is not a runtime dependency, so the
+split has to be textual — TOML on `[section]` headers, YAML on column-zero keys, JSON on brace depth.
 
 **Also outstanding:** (1) **batch review** (§6.4) — needs a loop pre-pass that prepares every write in a
 multi-write step and one review screen; `cli/approval.batch_blockers` is already written and tested,
