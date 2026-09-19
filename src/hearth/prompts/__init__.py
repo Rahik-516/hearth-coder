@@ -36,6 +36,12 @@ def system_prompt_for(mode: str) -> str:
     (docs/system-design.md §9.2).
     """
     parts = [load("system_core")]
+    # Chat mode has no tools, so the tool protocol would be several hundred tokens of
+    # instructions for capabilities that do not exist — and a model told it can edit
+    # files, in a mode where it cannot, will try. Mode decides which tools exist
+    # (`core.session.Mode`), so mode decides whether the protocol is included.
+    if mode != "chat":
+        parts.append(load("system_tools"))
     # A mode without its own prompt file falls back to the core rules alone.
     with contextlib.suppress(PromptNotFoundError):
         parts.append(load(f"mode_{mode}"))

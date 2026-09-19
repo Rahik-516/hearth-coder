@@ -200,6 +200,7 @@ def build_default_registry(
         GitCommitTool,
         GitSwitchTool,
     )
+    from hearth.tools.meta import TodoWriteTool
     from hearth.tools.read_fs import FindFilesTool, ListDirTool, ReadFileTool
     from hearth.tools.search import (
         FindReferencesTool,
@@ -231,5 +232,6 @@ def build_default_registry(
             GitCommitTool(),
             GitBranchCreateTool(),
             GitSwitchTool(),
+            TodoWriteTool(),
         ]
     )
