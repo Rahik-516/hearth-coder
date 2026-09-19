@@ -659,3 +659,82 @@ def test_registry_refuses_duplicate_names() -> None:
     registry = ToolRegistry([ReadFileTool()])
     with pytest.raises(ValueError, match="already registered"):
         registry.register(ReadFileTool())
+
+
+# ------------------------------------------------------- a stopped turn still answers
+
+
+class ToolsWithdrawnProvider:
+    """Keeps requesting the same tool until tools are taken away, then answers in words.
+
+    That is what a real model does when the loop ends its turn: the wrap-up request has no
+    tools attached, so the only thing left to produce is text.
+    """
+
+    def __init__(self) -> None:
+        self.requests: list[ChatRequest] = []
+
+    async def chat_stream(self, request: ChatRequest):
+        self.requests.append(request)
+        if request.tools:
+            call = ToolCall(call_id="t", name="find_symbol", arguments={"name": "Same"})
+            yield ChatChunk(tool_calls=[call], done=True, done_reason="stop")
+            return
+        yield ChatChunk(content_delta="I added the tests and they pass.")
+        yield ChatChunk(done=True, done_reason="stop")
+
+
+async def test_a_loop_stop_still_ends_with_an_answer(gateway: ToolGateway) -> None:
+    """The real `hearth run` bug: the work was done, the model kept re-running the same
+    call, the loop cut it off — and the user got an empty ending with no summary.
+
+    `_final_answer` existed for exactly this and was never called.
+    """
+    provider = ToolsWithdrawnProvider()
+    loop = make_loop(
+        provider,
+        gateway,
+        limits=TurnLimits(max_steps=10),
+        tool_schemas=[{"type": "function", "function": {"name": "find_symbol"}}],
+    )
+
+    outcome = await loop.run(base_request=base_request())
+
+    assert outcome.reason == "loop_detected"
+    assert "tests and they pass" in outcome.answer
+
+
+async def test_a_step_limit_stop_still_ends_with_an_answer(gateway: ToolGateway) -> None:
+    provider = ToolsWithdrawnProvider()
+    loop = make_loop(
+        provider,
+        gateway,
+        limits=TurnLimits(max_steps=1),
+        tool_schemas=[{"type": "function", "function": {"name": "find_symbol"}}],
+    )
+
+    outcome = await loop.run(base_request=base_request())
+
+    assert outcome.reason == "step_limit"
+    assert outcome.answer.strip(), "a stopped turn must not end silently"
+
+
+async def test_the_wrap_up_request_carries_no_tools_and_no_dangling_calls(
+    gateway: ToolGateway,
+) -> None:
+    """Tools are withdrawn so the model can only answer, and a step that stopped before its
+    calls ran must not leave an assistant message asking for tools that never reported back —
+    a transcript with unanswered tool calls confuses some chat templates."""
+    provider = ToolsWithdrawnProvider()
+    loop = make_loop(
+        provider,
+        gateway,
+        limits=TurnLimits(max_steps=1),
+        tool_schemas=[{"type": "function", "function": {"name": "find_symbol"}}],
+    )
+
+    await loop.run(base_request=base_request())
+
+    wrap_up = provider.requests[-1]
+    assert wrap_up.tools == []
+    assert not any(m.role == "assistant" and m.tool_calls for m in wrap_up.messages[2:])

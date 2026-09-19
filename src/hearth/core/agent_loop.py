@@ -121,14 +121,21 @@ class AgentLoop:
             stop = tracker.stop_reason()
             if stop is not None:
                 await self._notice(f"Stopping: {stop.replace('_', ' ')}. Answering with what is available.")
-                return LoopOutcome(
-                    answer="".join(answer_parts) or text,
-                    thinking="".join(thinking_parts),
+                # This step's tool calls are not going to run, so the assistant message
+                # that requested them is dropped: a transcript with tool calls that never
+                # reported back confuses some chat templates.
+                messages.pop()
+                return await self._wrap_up(
+                    base_request,
+                    messages,
                     reason=stop,
+                    answer_parts=answer_parts,
+                    thinking_parts=thinking_parts,
+                    fallback=text,
                     steps=tracker.steps,
                     tool_calls=tool_calls_made,
-                    messages=messages,
                     usage=usage,
+                    on_text=on_text,
                 )
 
             results = await self._run_calls(outcome.calls, tracker, step=tracker.steps)
@@ -145,17 +152,58 @@ class AgentLoop:
                 )
 
             if any(nudge and nudge.startswith("STOP:") for _, _, nudge in results):
-                return LoopOutcome(
-                    answer="".join(answer_parts) or text,
-                    thinking="".join(thinking_parts),
+                return await self._wrap_up(
+                    base_request,
+                    messages,
                     reason="loop_detected",
+                    answer_parts=answer_parts,
+                    thinking_parts=thinking_parts,
+                    fallback=text,
                     steps=tracker.steps,
                     tool_calls=tool_calls_made,
-                    messages=messages,
                     usage=usage,
+                    on_text=on_text,
                 )
 
     # -------------------------------------------------------------- internals
+
+    async def _wrap_up(
+        self,
+        base_request: ChatRequest,
+        messages: list[Message],
+        *,
+        reason: str,
+        answer_parts: list[str],
+        thinking_parts: list[str],
+        fallback: str,
+        steps: int,
+        tool_calls: int,
+        usage: Any,
+        on_text: Any,
+    ) -> LoopOutcome:
+        """End a stopped turn with an answer instead of silence.
+
+        Every early stop — step limit, retry budget, repeated failures, a repeated call —
+        used to return whatever text happened to accompany the last tool call, which is
+        usually none. The observed case was the worst one: the change was made and the
+        tests passed, then the model re-ran the same call until the loop cut it off, and
+        the user was left with an empty ending and no way to tell it had worked.
+
+        The wrap-up request has tools withdrawn, so the only thing the model can produce
+        is a summary. If even that fails the caller still gets the reason and whatever text
+        there was, rather than an exception replacing the partial answer.
+        """
+        summary = await self._final_answer(base_request, messages, on_text=on_text)
+        answer = summary.strip() or "".join(answer_parts) or fallback
+        return LoopOutcome(
+            answer=answer,
+            thinking="".join(thinking_parts),
+            reason=reason,
+            steps=steps,
+            tool_calls=tool_calls,
+            messages=messages,
+            usage=usage,
+        )
 
     async def _run_calls(
         self, calls: list[ToolCall], tracker: StepTracker, *, step: int
@@ -204,10 +252,10 @@ class AgentLoop:
                     Message(
                         role="user",
                         content=(
-                            "You have run out of tool budget for this turn. "
-                            "Answer now using only what you already gathered, with "
-                            "path:line citations. If it is not enough, say precisely "
-                            "what is still missing."
+                            "You cannot call any more tools this turn. Answer now using only "
+                            "what you already gathered. Say what you did and what you "
+                            "verified, citing path:line where you can. If the task is not "
+                            "finished, say precisely what is still missing."
                         ),
                     ),
                 ],
