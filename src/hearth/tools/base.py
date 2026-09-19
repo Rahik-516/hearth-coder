@@ -16,6 +16,7 @@ generated for a call that is then rejected, with nothing to undo.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, ClassVar
@@ -129,8 +130,16 @@ class Tool[ArgsT: BaseModel](ABC):
         """Compute what this call would do. **Must not mutate anything.**"""
 
     @abstractmethod
-    def execute(self, args: ArgsT, context: ToolContext, prepared: Prepared) -> ToolResult:
-        """Do it. Must re-verify any precondition ``prepare()`` relied on."""
+    def execute(
+        self, args: ArgsT, context: ToolContext, prepared: Prepared
+    ) -> ToolResult | Awaitable[ToolResult]:
+        """Do it. Must re-verify any precondition ``prepare()`` relied on.
+
+        May be declared ``async``; the gateway awaits whatever comes back. Only the tools
+        that need it are — the exec tools, which drive a subprocess and must not block the
+        event loop while a test suite runs. A filesystem tool stays synchronous rather than
+        paying for an event-loop round trip it has no use for.
+        """
 
     def schema(self) -> dict[str, Any]:
         """The JSON tool schema sent to the model, derived from ``args_model``.

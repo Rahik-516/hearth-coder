@@ -191,6 +191,7 @@ def build_default_registry() -> ToolRegistry:
         GrepTool,
         SearchCodeTool,
     )
+    from hearth.tools.shell import RunCommandTool
     from hearth.tools.write_fs import EditFileTool, WriteFileTool
 
     return ToolRegistry(
@@ -207,5 +208,6 @@ def build_default_registry() -> ToolRegistry:
             GitLogTool(),
             EditFileTool(),
             WriteFileTool(),
+            RunCommandTool(),
         ]
     )

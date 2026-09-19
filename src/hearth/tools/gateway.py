@@ -23,6 +23,7 @@ a filesystem — see ``safety/policy.py``.
 
 from __future__ import annotations
 
+import inspect
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
@@ -213,7 +214,11 @@ class ToolGateway:
         # --- execute ------------------------------------------------------
         await self._channel.started(call_id=call_id, tool=name)
         try:
-            result = tool.execute(parsed, self._context, prepared)
+            outcome = tool.execute(parsed, self._context, prepared)
+            # The exec tools are async; the filesystem tools are not. Awaiting only what
+            # is awaitable keeps that a per-tool choice rather than a change every tool
+            # has to absorb.
+            result = await outcome if inspect.isawaitable(outcome) else outcome
         except PathError as exc:
             result = ToolResult.failure(ErrorCode.PATH_REFUSED, str(exc))
         except Exception as exc:
