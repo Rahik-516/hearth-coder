@@ -10,9 +10,13 @@ from __future__ import annotations
 import hashlib
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from hearth.llm.errors import ProviderUnavailableError
 from hearth.llm.types import ChatChunk, ChatRequest, ModelInfo, RunningModel, ToolCall, Usage
+
+if TYPE_CHECKING:
+    import numpy as np
 
 #: Fallback embedding width when a caller does not request a specific dimension count.
 _DEFAULT_EMBED_DIMS = 8
@@ -102,11 +106,15 @@ class ScriptedProvider:
         model: str,
         dimensions: int | None = None,
         on_cpu: bool = False,
-    ) -> list[list[float]]:
-        """Deterministic fake vectors, stable per input text so caching tests are meaningful."""
+    ) -> np.ndarray:
+        """Deterministic unit vectors, stable per input text so caching tests are meaningful."""
+        import numpy as np
+
         self.embed_calls.append((list(texts), model, dimensions, on_cpu))
         dims = dimensions or _DEFAULT_EMBED_DIMS
-        return [_fake_vector(text, dims) for text in texts]
+        matrix = np.asarray([_fake_vector(text, dims) for text in texts], dtype=np.float32)
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        return matrix / np.where(norms == 0.0, 1.0, norms)
 
     async def close(self) -> None:
         return None

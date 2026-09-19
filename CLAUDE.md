@@ -19,14 +19,17 @@ suite (`-m live`) is green except the embedding test.
 
 **Outstanding:** (1) **batch review** (§6.4) — needs a loop pre-pass that prepares every write in a
 multi-write step and one review screen; `cli/approval.batch_blockers` is already written and tested,
-and the roadmap names this the first thing to cut. (2) **`ollama pull qwen3-embedding:0.6b`** — without
-it retrieval is lexical-only, `hearth doctor` fails one check and one live test fails. (3) **The 9b
-half of the task eval**, which needs the GPU.
+and the roadmap names this the first thing to cut. (2) **The 9b half of the task eval** — now possible,
+since the GPU works; it needs partial offload on a 6 GB card. (3) Phase 2 and Phase 3 are not started.
 
-**The GPU is not being used, and it is not Hearth's fault.** `nvidia-smi` shows the RTX 3060 idle with
-~6 GB free, but Ollama's `llama-server --list-devices` crashes (`0xc0000005`) for every backend, so it
-registers `total_vram=0` and runs 100% on CPU — see `%LOCALAPPDATA%\Ollama\server.log`. Everything works,
-about 10x slower. `hearth doctor` now names this specifically rather than suggesting a smaller model.
+**The GPU works, after a fix worth remembering.** Ollama's device discovery was crashing
+(`0xc0000005`) on every backend because `llama-server.exe` loaded the old system
+`C:\Windows\System32\MSVCP140.dll` (14.28) instead of the 14.44 copy Ollama bundles in its backend
+folders. The fix was copying those bundled runtime DLLs into `E:\DevTools\Ollama\lib\ollama\` beside
+`llama-server.exe`. Effect: 61 tok/s instead of 7.6, and the task eval drops from ~5 minutes to ~20
+seconds per task. If an Ollama update ever puts the model back on CPU, `hearth doctor` will say so and
+the same copy fixes it. Diagnosis method, if it recurs: run `llama-server.exe --list-devices` by hand
+and read the faulting module from the Windows Application event log (Event ID 1000).
 
 **Run the tests the way CLAUDE.md documents.** `uv run pytest -q` was broken for months — it collected
 the fixture repos' own suites and died on import — and nobody noticed because every session ran

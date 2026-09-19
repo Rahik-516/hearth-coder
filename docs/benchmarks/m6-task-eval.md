@@ -1,9 +1,50 @@
 # M6 task eval — results
 
-**3 of 3 tasks passed** on `qwen3.5:4b`, in one run, on the reference machine.
+**3 of 3 tasks passed** on `qwen3.5:4b`, twice: once on CPU, once on the GPU.
 
-The M6 criterion asked for ≥1 of 3. Read that result with the two caveats below before
-treating it as a benchmark: inference was **CPU-only**, and retrieval was **lexical-only**.
+The M6 criterion asked for ≥1 of 3. Two runs are recorded below. The second, on the GPU,
+is the representative one for this machine; the first is kept because it documents the
+CPU-only baseline and the problem that caused it.
+
+## Run 2 — GPU (representative)
+
+Ollama was repaired (see "The GPU fix" below) and the model loaded at `100% GPU`.
+
+| Task | Result | Steps | Tool calls | Wall time | CPU run |
+|---|---|---|---|---|---|
+| `add-unit-test` | PASS | 6 | 5 | **14.7 s** | 242.3 s |
+| `rename-symbol` | PASS | 8 | 8 | **21.5 s** | 374.0 s |
+| `fix-failing-test` | PASS | 6 | 5 | **20.2 s** | 246.9 s |
+
+About **16–17× faster** end to end. Generation measured 61–64 tok/s against 7.6 tok/s on
+CPU, and prefill on the same 3.8K-token prompt dropped from 69 s to 1.8 s.
+
+Retrieval quality also improved once `qwen3-embedding:0.6b` was installed and the codebase
+embedded (2566/2566 chunks in 116 s). The eval's own throwaway workspaces are indexed
+lexically, so these three tasks did not exercise dense retrieval.
+
+## The GPU fix
+
+The CPU-only run was not a Hearth or hardware problem. Ollama's log showed
+`llama-server --list-devices` failing with `0xc0000005` for every backend, and the Windows
+Application event log named the faulting module: **`C:\Windows\SYSTEM32\MSVCP140.dll`,
+version 14.28** — a 2021 Microsoft C++ runtime. The current `llama-server.exe` needs 14.44.
+
+Ollama ships 14.44 inside each backend folder but not beside `llama-server.exe`, so Windows
+resolved the old system copy first and crashed on load — before it ever looked at the card.
+That is why Vulkan failed too, though it does not use CUDA.
+
+Fix: copy Ollama's bundled runtime DLLs into `lib\ollama\` beside `llama-server.exe` (Windows
+searches the application directory first), then restart Ollama. Nothing downloaded, nothing
+changed system-wide. `Available devices: CUDA0: NVIDIA GeForce RTX 3060 Laptop GPU`.
+
+An Ollama update may replace those files; if the GPU falls back to CPU, `hearth doctor` will
+say so, and the same copy restores it.
+
+## Run 1 — CPU-only (baseline)
+
+Read this run with the two caveats below: inference was **CPU-only**, and retrieval was
+**lexical-only**.
 
 ## Run
 

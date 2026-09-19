@@ -239,3 +239,32 @@ def test_an_idle_card_with_zero_percent_is_told_ollama_missed_the_gpu() -> None:
 def test_unknown_vram_falls_back_to_the_generic_advice() -> None:
     """With no nvidia-smi there is nothing to distinguish the two causes."""
     assert "smaller model" in doc._placement_fix(0, free_vram_mib=None)
+
+
+async def test_a_cpu_pinned_embedding_model_is_not_a_warning(loaded, tmp_path: Path, monkeypatch) -> None:
+    """The embedding model sits on CPU by design; warning about it is noise with wrong advice."""
+    provider = ScriptedProvider()
+
+    async def running() -> list[RunningModel]:
+        return [RunningModel(name="qwen3-embedding:0.6b", size=1000, size_vram=0)]
+
+    monkeypatch.setattr(provider, "running", running)
+
+    results = await doc._check_loaded_models(provider, cpu_pinned=frozenset({"qwen3-embedding:0.6b"}))
+
+    assert results[0].status is Status.PASS
+    assert "by design" in results[0].detail
+
+
+async def test_a_chat_model_on_cpu_still_warns(loaded, tmp_path: Path, monkeypatch) -> None:
+    """Only the pinned model is exempt — the chat model on CPU is the real problem."""
+    provider = ScriptedProvider()
+
+    async def running() -> list[RunningModel]:
+        return [RunningModel(name="qwen3.5:4b", size=1000, size_vram=0)]
+
+    monkeypatch.setattr(provider, "running", running)
+
+    results = await doc._check_loaded_models(provider, cpu_pinned=frozenset({"qwen3-embedding:0.6b"}))
+
+    assert results[0].status is Status.WARN

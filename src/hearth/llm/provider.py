@@ -13,9 +13,12 @@ are testable without a running Ollama instance.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
-from typing import Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from hearth.llm.types import ChatChunk, ChatRequest, ModelInfo, RunningModel
+
+if TYPE_CHECKING:
+    import numpy as np
 
 
 @runtime_checkable
@@ -54,8 +57,11 @@ class LLMProvider(Protocol):
         model: str,
         dimensions: int | None = None,
         on_cpu: bool = False,
-    ) -> list[list[float]]:
-        """Embed a batch of texts with an embedding model.
+    ) -> np.ndarray:
+        """Embed a batch of texts, as an L2-normalized ``(len(texts), dims)`` float32 matrix.
+
+        Unit length is part of the contract, so callers can use a dot product as cosine
+        similarity without normalizing again.
 
         ``on_cpu`` pins the request off the GPU so an interactive query embedding cannot
         evict the chat model from a small GPU mid-session (docs/system-design.md §6.7).

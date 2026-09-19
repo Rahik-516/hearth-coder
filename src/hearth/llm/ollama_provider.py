@@ -14,7 +14,7 @@ exceeded.
 from __future__ import annotations
 
 from collections.abc import AsyncIterator, Sequence
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import ollama
 
@@ -28,6 +28,9 @@ from hearth.llm.types import (
     ToolCall,
     Usage,
 )
+
+if TYPE_CHECKING:
+    import numpy as np
 
 DEFAULT_HOST = "http://127.0.0.1:11434"
 
@@ -162,7 +165,9 @@ class OllamaProvider:
         model: str,
         dimensions: int | None = None,
         on_cpu: bool = False,
-    ) -> list[list[float]]:
+    ) -> np.ndarray:
+        import numpy as np
+
         options: dict[str, object] = {"num_gpu": 0} if on_cpu else {}
         try:
             response = await self._client.embed(
@@ -173,7 +178,14 @@ class OllamaProvider:
             )
         except Exception as exc:
             raise ProviderUnavailableError(f"embed request failed: {exc}") from exc
-        return [list(vector) for vector in response.embeddings]
+
+        matrix = np.asarray(response.embeddings, dtype=np.float32)
+        # Unit length is part of this method's contract, so it is enforced here rather than
+        # left to the server. A truncated (matryoshka) embedding is no longer unit length
+        # after the cut, and everything downstream — the cosine-as-dot-product search in
+        # particular — assumes it is.
+        norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+        return matrix / np.where(norms == 0.0, 1.0, norms)
 
     async def close(self) -> None:
         client = getattr(self._client, "_client", None)

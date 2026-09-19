@@ -248,7 +248,13 @@ async def check_ollama(
     results.append(
         await _check_model(provider, config.models.embed, needs="embedding", label="Embedding model")
     )
-    results.extend(await _check_loaded_models(provider, free_vram_mib=free_vram_mib()))
+    # The embedding model runs on CPU on purpose unless the user asked for the GPU:
+    # pinning it there is what stops a query embedding from evicting the chat model out
+    # of a small card mid-session (docs/system-design.md §6.7).
+    cpu_pinned = frozenset() if config.models.embed_placement == "gpu" else frozenset({config.models.embed})
+    results.extend(
+        await _check_loaded_models(provider, free_vram_mib=free_vram_mib(), cpu_pinned=cpu_pinned)
+    )
     return results
 
 
@@ -296,7 +302,10 @@ async def _check_model(provider: LLMProvider, model: str, *, needs: str, label: 
 
 
 async def _check_loaded_models(
-    provider: LLMProvider, *, free_vram_mib: int | None = None
+    provider: LLMProvider,
+    *,
+    free_vram_mib: int | None = None,
+    cpu_pinned: frozenset[str] = frozenset(),
 ) -> list[CheckResult]:
     """Report GPU placement for anything currently loaded.
 
@@ -314,7 +323,13 @@ async def _check_loaded_models(
         if fraction is None:
             continue
         percent = round(fraction * 100)
-        if entry.fully_on_gpu:
+        if entry.name in cpu_pinned and percent == 0:
+            # Deliberate, so not a warning — and the generic advice ("close GPU
+            # applications") would send the user to fix something that is working.
+            results.append(
+                CheckResult(f"Loaded: {entry.name}", Status.PASS, "on CPU by design (embed_placement)")
+            )
+        elif entry.fully_on_gpu:
             results.append(CheckResult(f"Loaded: {entry.name}", Status.PASS, f"{percent}% GPU"))
         else:
             results.append(
