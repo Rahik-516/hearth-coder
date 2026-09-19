@@ -22,6 +22,7 @@ from typing import Any, Literal
 
 import numpy as np
 
+from hearth.retrieval.expansion import Expansion, expand
 from hearth.retrieval.fusion import FusionContext, FusionWeights, fuse
 from hearth.retrieval.query_analysis import Intent, QueryAnalysis, analyze
 from hearth.retrieval.retrievers import (
@@ -46,6 +47,11 @@ _UNSET: Any = object()
 #: Chunks per file in the final list, unless the file was explicitly named.
 DEFAULT_MAX_PER_FILE = 3
 
+#: Tokens graph expansion may spend on signatures. Deliberately a small fraction of the
+#: retrieval budget: expansion supports the chunks that matched, and a large allowance
+#: would let supporting context outweigh the answer it is supporting (§7.5).
+DEFAULT_EXPANSION_BUDGET = 400
+
 
 @dataclass
 class RetrievalResult:
@@ -55,6 +61,9 @@ class RetrievalResult:
     analysis: QueryAnalysis
     results: list[FusedResult] = field(default_factory=list)
     per_retriever: dict[Retriever, list[Candidate]] = field(default_factory=dict)
+    #: Signature-only additions from graph expansion (§7.5). Separate from ``results``
+    #: because they were never ranked — they are context the chunks needed, not matches.
+    expansions: list[Expansion] = field(default_factory=list)
 
     #: (embedded, total) distinct chunk texts. Dense results are partial below 1.0.
     coverage: tuple[int, int] = (0, 0)
@@ -82,9 +91,11 @@ class RetrievalEngine:
         vector_index: NumpyVectorIndex | None = None,
         weights: FusionWeights | None = None,
         max_per_file: int = DEFAULT_MAX_PER_FILE,
+        expansion_budget: int = DEFAULT_EXPANSION_BUDGET,
     ) -> None:
         self._connection = connection
         self._vector_index = vector_index
+        self._expansion_budget = expansion_budget
         self._weights = weights or FusionWeights()
         self._max_per_file = max_per_file
         self._database_path_cache: str | None = _UNSET
@@ -182,11 +193,13 @@ class RetrievalEngine:
             limit=limit * 4,
         )
         diversified = self._apply_diversity(fused, analysis, limit=limit)
+        expansions = self._expand(diversified, analysis)
 
         return RetrievalResult(
             query=query,
             analysis=analysis,
             results=diversified,
+            expansions=expansions,
             per_retriever=per_retriever,
             coverage=coverage,
             dense_used=dense_used,
@@ -262,6 +275,33 @@ class RetrievalEngine:
                 path = None
             self._database_path_cache = path
         return self._database_path_cache
+
+    def _expand(
+        self, results: list[FusedResult], analysis: QueryAnalysis
+    ) -> list[Expansion]:
+        """Add the signatures the final chunks need to be readable (§7.5).
+
+        Runs after diversity rather than before, because expansion is defined over the
+        chunks that will actually be sent: expanding candidates that are about to be cut
+        would spend the budget on context for text the model never sees.
+
+        Failures are swallowed. Expansion is an enhancement to a result that is already
+        correct without it, and a malformed symbol table should cost the answer some
+        signatures rather than cost it the retrieval.
+        """
+        if not results:
+            return []
+
+        try:
+            return expand(
+                self._connection,
+                results,
+                intent=str(analysis.intent),
+                symbols=analysis.identifiers,
+                budget_tokens=self._expansion_budget,
+            )
+        except Exception:
+            return []
 
     def _apply_diversity(
         self, results: list[FusedResult], analysis: QueryAnalysis, *, limit: int
