@@ -362,6 +362,11 @@ def _run_task(workspace: Path, model: str, prompt: str, *, max_steps: int | None
     """One headless agent run against a disposable workspace."""
     from hearth.cli.chat_commands import _build_gateway, _build_runtime, _open_state
 
+    # Index the copy first. A real user runs `hearth index` before asking for work, and an
+    # unindexed workspace makes `search_code` fail on every call — which would measure the
+    # eval's setup rather than the model.
+    _index_workspace(workspace)
+
     loaded = load_config(project_root=workspace)
     provider, engine, embed_query, index_connection = _build_runtime(workspace, loaded)
 
@@ -426,3 +431,11 @@ def gateway_schemas(loaded: LoadedConfig, profile: object) -> list[dict[str, obj
     return registry.for_mode(
         "agent", tool_reliability=getattr(profile, "tool_reliability", "high")
     ).schemas
+
+
+def _index_workspace(workspace: Path) -> None:
+    """Build the lexical index for a disposable eval workspace."""
+    connection = connect(paths.index_db_path(workspace))
+    migrate(connection, database="index")
+    Indexer(root=workspace, repository=IndexRepository(connection)).run()
+    connection.close()
