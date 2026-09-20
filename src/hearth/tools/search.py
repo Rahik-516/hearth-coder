@@ -19,7 +19,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field
 
 from hearth.indexing.filters import PathFilter
-from hearth.safety.paths import relative_to_workspace
+from hearth.safety.paths import is_sensitive_read, is_symlink_to_outside, relative_to_workspace
 from hearth.tools.base import Prepared, Risk, Tool, ToolContext
 from hearth.tools.results import ErrorCode, ToolResult
 
@@ -133,8 +133,19 @@ class GrepTool(Tool[GrepArgs]):
         path_filter = PathFilter()
         results: list[str] = []
 
+        root = workspace.resolve(strict=False)
+
         for candidate in sorted(workspace.rglob(args.path_glob or "*")):
             if not candidate.is_file():
+                continue
+            # The jail, applied to what the walk found rather than to what the model
+            # named. A symlink inside the workspace can point at `~/.ssh/id_rsa`, and
+            # `rglob` reports it as an ordinary file under the workspace. Skipping links
+            # whose target leaves the tree also matches ripgrep, which does not follow
+            # symlinks by default — so the two backends agree on what is searchable.
+            if is_symlink_to_outside(candidate, root) or is_sensitive_read(
+                candidate.resolve(strict=False)
+            ):
                 continue
             shown = relative_to_workspace(candidate, workspace)
             if not path_filter.decide(shown).include:

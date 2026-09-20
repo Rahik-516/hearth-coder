@@ -591,12 +591,9 @@ _REVIEWED = {
     "read_fs.py",  # every path via `resolve_in_workspace`
     "edit_engine.py",  # operates on text in memory, never on paths
     "output.py",  # blob store, not the workspace
-    # `_python_grep`, the fallback used when ripgrep is absent. It walks
-    # `workspace.rglob(...)` and reads what it finds, so the model's `path_glob` cannot
-    # name a starting point — but a symlink inside the workspace pointing outside it
-    # would still be read, and `is_sensitive_read` never sees the path. That gap is real
-    # and is not closed by this exemption; it is recorded here so the next person to read
-    # this list finds it rather than assuming the file was cleared.
+    # `_python_grep`, the fallback used when ripgrep is absent. It walks the workspace
+    # with `rglob`, so each hit is checked with `is_symlink_to_outside` and
+    # `is_sensitive_read` before it is read (see test_grep_fallback_* below).
     "search.py",
 }
 
@@ -639,3 +636,75 @@ def test_the_reviewed_list_names_files_that_exist() -> None:
     present = {source.name for source in root.rglob("*.py")}
 
     assert present >= _REVIEWED
+
+
+# -------------------------- the grep fallback and symlinks that leave the workspace
+
+
+def _python_grep_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force the pure-Python backend, which is the one that walks the tree itself."""
+    monkeypatch.setattr("hearth.tools.search.shutil.which", lambda _name: None)
+
+
+def _grep(workspace: Path, pattern: str):
+    from hearth.tools.search import GrepTool
+
+    tool = GrepTool()
+    args = tool.args_model.model_validate({"pattern": pattern})
+    context = ToolContext(workspace=workspace)
+    return tool.execute(args, context, tool.prepare(args, context))
+
+
+def test_grep_fallback_does_not_read_through_a_symlink_that_leaves_the_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gap the exemption list used to record.
+
+    `rglob` reports a symlink as an ordinary file under the workspace, so without a check
+    on what the walk *found*, a link to a file outside would be read and its contents
+    returned to the model — with `is_sensitive_read` never having seen the real path.
+    """
+    _python_grep_only(monkeypatch)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("TOPSECRET-VALUE\n", encoding="utf-8")
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    (workspace / "ok.py").write_text("visible = 1\n", encoding="utf-8")
+    (workspace / "link.txt").symlink_to(outside)
+
+    leaked = _grep(workspace, "TOPSECRET")
+
+    # Asserted on the file's *value*, not the pattern: the no-match message echoes the
+    # pattern back, so a check for "TOPSECRET" would fail on a perfectly correct result.
+    assert "TOPSECRET-VALUE" not in leaked.content
+    assert "link.txt" not in leaked.content
+    assert "No matches" in leaked.content
+
+
+def test_grep_fallback_still_searches_ordinary_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard must not have turned the fallback into one that finds nothing."""
+    _python_grep_only(monkeypatch)
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    (workspace / "ok.py").write_text("visible = 1\n", encoding="utf-8")
+
+    found = _grep(workspace, "visible")
+
+    assert "ok.py" in found.content
+
+
+def test_grep_fallback_follows_a_symlink_that_stays_inside(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only links that *leave* are refused; an in-tree alias is just another name."""
+    _python_grep_only(monkeypatch)
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    (workspace / "real.py").write_text("inside = 1\n", encoding="utf-8")
+    (workspace / "alias.py").symlink_to(workspace / "real.py")
+
+    found = _grep(workspace, "inside")
+
+    assert "real.py" in found.content

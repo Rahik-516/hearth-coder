@@ -98,10 +98,11 @@ memory; any failure writes nothing), `move_file` checkpoints **both** ends, and 
 a timestamped directory under Hearth's trash rather than unlinking.
 
 **The `tools/` path-jail grep guard now exists.** It had been documented here for months and was never
-written. It passes with reviewed exemptions, one of which — `search.py`'s `_python_grep` fallback —
-records a real open gap rather than a clearance: it reads files found by `rglob` without going through
-`resolve_in_workspace`, so a symlink inside the workspace pointing outside it would be read and
-`is_sensitive_read` would never see the path.
+written. Writing it surfaced a real gap: `grep`'s pure-Python fallback (used when ripgrep is absent) read
+files found by `rglob` without going through the jail, so a symlink inside the workspace pointing outside
+it was read and `is_sensitive_read` never saw the real path. The fallback now skips links that leave the
+workspace and sensitive targets, matching ripgrep, which does not follow symlinks. Exemptions in the guard
+are listed per file so a new tool touching the filesystem has to be argued for.
 
 **Also outstanding:** (1) the rest of I3 — the five workflows (`/test`, `/doc`, `/review`, `/commit`,
 `/refactor`), batch approval UI, and growing the task eval to 10 tasks. (2) **batch review** (§6.4) —
