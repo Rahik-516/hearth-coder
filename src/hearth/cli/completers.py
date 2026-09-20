@@ -21,6 +21,8 @@ SLASH_COMMANDS: dict[str, str] = {
     "/mode": "show or switch mode: chat, plan or agent",
     "/plan": "work out a plan for a task, without editing anything",
     "/execute": "carry out the approved plan",
+    "/commit": "write a message for the staged changes and commit them",
+    "/review": "review uncommitted changes (--staged for the index only)",
     "/clear": "clear this session's history",
     "/compact": "summarise older history to free context",
     "/sources": "show the context retrieved for the last turn",

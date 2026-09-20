@@ -558,14 +558,28 @@ class ChatRunner:
 
         return result
 
-    async def _summarize(self, session: Session, prompt: str) -> str:
-        """Ask the model for the summary. The only place compaction touches the LLM."""
+    async def complete(
+        self, session: Session, prompt: str, *, num_predict: int | None = None
+    ) -> str:
+        """One standalone completion: no history, no retrieval, no tools, temperature 0.
+
+        For the jobs that are a transformation of text already in hand — a summary, a
+        commit message, a review of a diff — where the session's own conversation would
+        only be noise, and where prefix-cache reuse is beside the point because nothing
+        here shares a prefix with anything. It is also why these calls do not touch the
+        session: they add nothing to the history and do not bump the cache epoch.
+
+        Raises:
+            LLMError: passed through. The caller knows what the text was for, so the
+                caller decides what a failure means to the user.
+        """
         request = ChatRequest(
             model=session.model,
             messages=[Message(role="user", content=prompt)],
             num_ctx=session.num_ctx,
             think="off",
             sampling=Sampling(temperature=0.0),
+            num_predict=num_predict,
         )
 
         parts: list[str] = []
@@ -573,6 +587,10 @@ class ChatRunner:
             if chunk.content_delta:
                 parts.append(chunk.content_delta)
         return "".join(parts)
+
+    async def _summarize(self, session: Session, prompt: str) -> str:
+        """Ask the model for the summary. The only place compaction touches the LLM."""
+        return await self.complete(session, prompt)
 
     def _fixed_overhead(self, session: Session) -> int:
         """Tokens compaction cannot reclaim: the system prompt and the repo map."""

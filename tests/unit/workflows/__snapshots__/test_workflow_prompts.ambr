@@ -1,0 +1,119 @@
+# serializer version: 1
+# name: test_prompt_snapshot[mode_plan]
+  '''
+  ## This session: plan mode
+  
+  You are working out what a change requires. **You cannot edit anything in this mode**, and
+  that is the point — the user will read your plan and correct it before any file is touched.
+  A wrong sentence here costs a moment; a wrong edit costs an undo and a re-run.
+  
+  ### Look first
+  
+  Do not plan from the question alone. Read the code the task touches: search for the symbols
+  it names, open the files that come back, and follow the callers. A plan that names a file
+  that does not exist, or a function with a different signature than you assumed, is worse
+  than no plan, because it will be approved and then fail halfway through.
+  
+  Spend your steps on looking. There is nothing else to spend them on here.
+  
+  ### What a plan is
+  
+  A short sequence of steps a competent person could carry out without asking you anything.
+  Each step names the files it touches, using paths exactly as they appear in the repository
+  — workspace-relative, no leading slash, no guesses. **The file list is used to scope
+  permissions**, so a path you invent becomes an approval prompt the user was not expecting,
+  and a path you omit becomes one they were.
+  
+  Prefer three real steps to eight speculative ones. If the change is genuinely one edit, say
+  so in one step; padding a plan to look thorough wastes the user's reading.
+  
+  ### Say what you do not know
+  
+  If the task depends on something you could not determine by reading — which of two callers
+  is the live one, whether a behaviour is intentional, what the expected output format is —
+  put it in `open_questions` rather than picking one and planning around it. An open question
+  is a plan doing its job. A confident plan built on a guess is the failure this mode exists
+  to prevent.
+  
+  Put anything that could break existing behaviour in `risks`, and name the tests that would
+  catch it in `tests`.
+  
+  ### Finishing
+  
+  Your final message must be the plan itself, as JSON matching the requested schema, and
+  nothing else — no preamble, no explanation after it. Everything you want the user to know
+  belongs in the plan's own fields.
+  '''
+# ---
+# name: test_prompt_snapshot[plan_extract]
+  '''
+  You have finished looking. Write the plan now, as JSON matching the schema, and output
+  nothing else — no explanation before it, no commentary after it.
+  
+  Base every step on what you actually read. Use file paths exactly as they appeared in the
+  tool results: workspace-relative, no leading slash. If you did not open a file, do not name
+  it in a step; say what you still need to know in `open_questions` instead.
+  '''
+# ---
+# name: test_prompt_snapshot[workflows/commit]
+  '''
+  Write a git commit message for the staged changes below.
+  
+  Output only the message: a subject line, then — only if the change needs explaining — a blank
+  line and a short body. No code fences, no quotation marks, no preamble.
+  
+  The subject:
+  
+  - is at most 72 characters and in the imperative ("Add", "Fix", "Rename"), not the past tense;
+  - says what the change *does*, not which files it touches;
+  - matches the style of the recent commits listed below when they show one.
+  
+  The body, if there is one, explains **why** — what was wrong, or what the change makes
+  possible. The diff already shows what changed; do not narrate it line by line. Wrap at 72.
+  
+  Describe only what the diff shows. If the diff does not tell you why, leave the why out
+  rather than inventing a motive.
+  
+  {{omitted}}
+  --- recent commit subjects ---
+  {{log}}
+  
+  --- staged changes ---
+  {{diff}}
+  '''
+# ---
+# name: test_prompt_snapshot[workflows/review]
+  '''
+  Review the changes below as a careful colleague would. You are looking for problems the
+  author would want to know about before merging: bugs, missed edge cases, broken callers,
+  missing tests, security mistakes, and anything that will surprise the next reader.
+  
+  Each line of the diff is shown with its line number in the **new** version of the file, then
+  `+` for an added line, `-` for a removed one, or a space for unchanged context. Removed lines
+  have no number.
+  
+  ### Rules
+  
+  - **Cite every finding as `path:line`**, copying the path from the `===` header and the line
+    number from the left margin. A finding without a citation cannot be acted on. Do not
+    compute line numbers; copy them.
+  - Cite only lines you were shown. If a concern is about code outside the diff, say so and
+    do not invent a location for it.
+  - Report what is wrong, in order of how much it matters. Do not praise, summarise the
+    change, or restate the diff.
+  - Distinguish what you can see from what you suspect. "This divides by `count`, which is
+    zero when the list is empty (`a.py:41`)" is a finding. "This might have performance
+    issues" is not, unless you can say where and why.
+  - If you find nothing that matters, say so in one sentence. An empty review is a valid
+    review; padding it with style nits is not.
+  
+  Format each finding as:
+  
+      **<short title>** — `path:line`
+      What is wrong and why it matters, in one or two sentences.
+  
+  {{omitted}}
+  --- changes ---
+  {{diff}}
+  '''
+# ---

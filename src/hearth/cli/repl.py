@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -34,9 +34,12 @@ from hearth.core.events import RetrievalPerformed
 from hearth.core.plan import PlanError, PlanStore, build_execute_message, parse_plan
 from hearth.core.runner import AgentTurnResult, ChatRunner, TurnResult
 from hearth.core.session import Mode, Session, SessionStore
+from hearth.llm.errors import LLMError
 from hearth.llm.types import Message
 from hearth.safety.checkpoints import CheckpointStore
 from hearth.tools.gateway import ToolGateway
+from hearth.workflows.commit import run_commit
+from hearth.workflows.review import run_review
 
 _BANNER = """[bold]Hearth[/bold] — ask about this repository.
 [dim]/help for commands · @path to pin a file · Ctrl+C cancels a reply · Ctrl+D exits[/dim]"""
@@ -205,6 +208,10 @@ class ChatREPL:
                 self._show_or_set_model(argument)
             case "/mode":
                 self._show_or_set_mode(argument)
+            case "/commit":
+                await self._commit()
+            case "/review":
+                await self._review_diff(argument)
             case "/plan":
                 await self._plan(argument)
             case "/execute":
@@ -313,6 +320,101 @@ class ChatREPL:
                 f"  [cyan]{source.path}:{source.start_line}-{source.end_line}[/cyan]"
                 f"  [dim]{source.retriever or ''}[/dim]"
             )
+
+    # -------------------------------------------------------------- workflows
+
+    async def _cancellable[T](self, work: Coroutine[object, object, T]) -> T | None:
+        """Run a long call as a task so Ctrl+C can interrupt it, as `_ask` does.
+
+        Returns None when cancelled. The workflows are a single model call each, but that
+        call is the slow part and a REPL that cannot be interrupted during it is the one
+        the user kills with the window.
+        """
+        task = asyncio.ensure_future(work)
+        try:
+            return await asyncio.shield(task)
+        except KeyboardInterrupt:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+        except asyncio.CancelledError:
+            pass
+        self.console.print("\n[yellow]cancelled[/yellow]")
+        return None
+
+    async def _commit(self) -> None:
+        """`/commit`: message from the staged diff, then a normal approved commit."""
+        if self.gateway is None:
+            self.console.print(
+                "[yellow]/commit is unavailable in this session[/yellow] — it needs a tool "
+                "gateway, which requires an indexed workspace"
+            )
+            return
+
+        # The commit is a `git_commit` tool call, which policy refuses outside agent mode.
+        # Switching is announced rather than silent for the same reason /execute announces
+        # it: it costs a re-prefill and changes what the model may do.
+        if self.session.mode is not Mode.AGENT:
+            self.session.switch_mode(Mode.AGENT)
+            self.console.print("[dim]mode: agent — the commit will ask before it happens[/dim]")
+
+        root = self.workspace or Path(self.session.workspace)
+        try:
+            outcome = await self._cancellable(
+                run_commit(
+                    runner=self.runner, session=self.session, gateway=self.gateway, root=root
+                )
+            )
+        except LLMError as exc:
+            self.console.print(f"[red]{exc}[/red]")
+            return
+        if outcome is None:
+            return
+
+        for warning in outcome.warnings:
+            self.console.print(f"[yellow]{warning}[/yellow]")
+
+        if outcome.status == "committed":
+            self.console.print(f"[green]{outcome.detail}[/green]")
+        elif outcome.status == "rejected":
+            self.console.print("[dim]commit declined — nothing was committed[/dim]")
+        else:
+            self.console.print(f"[red]not committed:[/red] {outcome.detail}")
+            if outcome.message and outcome.status == "failed":
+                self.console.print("[dim]the message was:[/dim]")
+                self.console.print(outcome.message, markup=False)
+
+    async def _review_diff(self, argument: str) -> None:
+        """`/review [--staged]`: read-only findings, with citations checked in code."""
+        staged = "--staged" in argument.split()
+        root = self.workspace or Path(self.session.workspace)
+
+        try:
+            outcome = await self._cancellable(
+                run_review(runner=self.runner, session=self.session, root=root, staged=staged)
+            )
+        except LLMError as exc:
+            self.console.print(f"[red]{exc}[/red]")
+            return
+        if outcome is None:
+            return
+
+        if outcome.refusal:
+            self.console.print(f"[yellow]{outcome.refusal}[/yellow]")
+            return
+
+        self.console.print()
+        # `markup=False`: the review quotes code, and code is full of square brackets.
+        self.console.print(outcome.text, markup=False)
+
+        if outcome.omitted:
+            self.console.print(
+                f"\n[yellow]not reviewed (did not fit):[/yellow] {', '.join(outcome.omitted)}"
+            )
+        checked = len(outcome.citations) - len(outcome.unverified)
+        self.console.print(
+            f"\n[dim]{checked}/{len(outcome.citations)} citation(s) verified against the diff[/dim]"
+        )
 
     # ------------------------------------------------------------- plan mode
 
