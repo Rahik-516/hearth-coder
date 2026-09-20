@@ -18,7 +18,11 @@ from typing import TYPE_CHECKING, Literal
 
 import ollama
 
-from hearth.llm.errors import ProviderConfigError, ProviderUnavailableError
+from hearth.llm.errors import (
+    MalformedOutputError,
+    ProviderConfigError,
+    ProviderUnavailableError,
+)
 from hearth.llm.guards import ensure_loopback_host, ensure_not_cloud_model
 from hearth.llm.types import (
     ChatChunk,
@@ -77,9 +81,7 @@ class OllamaProvider:
         # then thinks by default. The observed failure is silence — the model spends its
         # whole `num_predict` budget in `message.thinking` and returns empty content. "off"
         # has to actively disable it.
-        think: Literal["low", "medium", "high"] | bool = (
-            False if request.think == "off" else request.think
-        )
+        think: Literal["low", "medium", "high"] | bool = False if request.think == "off" else request.think
 
         try:
             stream = await self._client.chat(
@@ -93,13 +95,13 @@ class OllamaProvider:
                 keep_alive=request.keep_alive,
             )
         except Exception as exc:
-            raise ProviderUnavailableError(f"chat request failed: {exc}") from exc
+            raise _chat_error("chat request failed", exc) from exc
 
         try:
             async for part in stream:
                 yield _to_chat_chunk(part)
         except Exception as exc:
-            raise ProviderUnavailableError(f"chat stream failed: {exc}") from exc
+            raise _chat_error("chat stream failed", exc) from exc
 
     async def version(self) -> str:
         """The server's version string, from ``/api/version``.
@@ -257,3 +259,23 @@ def _to_chat_chunk(part: object) -> ChatChunk:
         done_reason=getattr(part, "done_reason", None),
         usage=usage,
     )
+
+
+#: What Ollama says when the *model's* output could not be parsed into a tool call. The
+#: server does that parsing, so a broken sample surfaces as a failed request with one of
+#: these in its message rather than as a bad response Hearth could inspect. Matched on text
+#: because that is all the SDK gives: the status code in these cases is -1.
+_MALFORMED_OUTPUT_MARKERS = (
+    "xml syntax error",
+    "error parsing tool call",
+    "unexpected end of json input",
+    "invalid character",
+)
+
+
+def _chat_error(prefix: str, exc: Exception) -> ProviderUnavailableError:
+    """Classify a failed chat call: a broken model sample, or an unavailable server."""
+    message = str(exc)
+    if any(marker in message.lower() for marker in _MALFORMED_OUTPUT_MARKERS):
+        return MalformedOutputError(f"{prefix}: the model produced a malformed tool call ({message})")
+    return ProviderUnavailableError(f"{prefix}: {message}")

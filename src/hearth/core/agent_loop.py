@@ -28,10 +28,16 @@ from typing import Any
 from hearth.core.bus import EventBus
 from hearth.core.events import Notice
 from hearth.core.limits import StepTracker, TurnLimits
+from hearth.llm.errors import MalformedOutputError
 from hearth.llm.tool_call_parser import parse_tool_calls
 from hearth.llm.types import ChatRequest, Message, ToolCall
 from hearth.tools.gateway import ToolGateway
 from hearth.tools.results import ToolResult
+
+#: Extra attempts when the server rejects the model's own tool-call output. Two, because
+#: a sample that fails to parse is independent of the last, and three consecutive broken
+#: ones is the model being unable to do it rather than bad luck.
+MAX_MALFORMED_RETRIES = 2
 
 
 @dataclass
@@ -277,6 +283,30 @@ class AgentLoop:
         return text
 
     async def _stream(
+        self, request: ChatRequest, *, on_text: Any, on_thinking: Any
+    ) -> tuple[str, str, list[ToolCall], Any, str]:
+        """One completion, retried when the model's own output was the problem.
+
+        A small model sometimes emits a tool call the server cannot parse, and on the first
+        live plan-mode eval that ended a whole task on one bad sample. It is a sampling
+        failure, so the next attempt usually succeeds — unlike a server that is down, which
+        is why only :class:`MalformedOutputError` is retried and every other provider error
+        still ends the turn at once. Bounded, and announced, so a model that cannot produce
+        a valid call is reported rather than looped on.
+        """
+        for attempt in range(MAX_MALFORMED_RETRIES + 1):
+            try:
+                return await self._stream_once(request, on_text=on_text, on_thinking=on_thinking)
+            except MalformedOutputError:
+                if attempt == MAX_MALFORMED_RETRIES:
+                    raise
+                await self._notice(
+                    f"The model produced a malformed tool call; retrying "
+                    f"({attempt + 1}/{MAX_MALFORMED_RETRIES})."
+                )
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    async def _stream_once(
         self, request: ChatRequest, *, on_text: Any, on_thinking: Any
     ) -> tuple[str, str, list[ToolCall], Any, str]:
         """One completion, accumulating text, thinking and native tool calls."""
