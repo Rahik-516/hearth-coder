@@ -105,11 +105,23 @@ workspace and sensitive targets, matching ripgrep, which does not follow symlink
 are listed per file so a new tool touching the filesystem has to be argued for.
 
 **Workflows (`workflows/`) follow "code does what code can do".** `/commit` and `/review` (both diff-based,
-sharing `workflows/diffs.py`) and `/test` have landed. A workflow's instructions go in the *user* message,
+sharing `workflows/diffs.py`), `/test`, `/refactor` and `/doc` have landed. A workflow's instructions go in the *user* message,
 never the system prompt, so invoking one does not bump the cache epoch. `ChatRunner.complete` is the
 standalone one-shot call. `/review` verifies every `path:line` citation against the numbered diff the model
 was shown and lists the ones that do not check out; `/test` runs the tests **itself** through the gateway
 rather than trusting the model's claim to have run them — the project has already been bitten by that.
+
+**`/doc` builds the structure in code and lets the model write two bounded things** — an overview paragraph
+and one sentence per component. Components, the Mermaid dependency diagram, entry points, environment
+variables, the tree and the whole API reference come from the index; model text is stripped of headings
+and fences so it cannot alter the document's shape, and any `path` it invents is flagged before approval.
+Dependencies are derived from *names* (a component uses another when it references a top-level symbol only
+that component defines), because the `imports` table stores unresolved module specs and nothing ever
+populates `resolved_file_id`.
+
+**Approving a new file used to show what and not where.** `write_file`'s preview for a file that did not
+exist was only the numbered content; an edit's diff names its file in the header, a creation's did not.
+Found by a `/doc` test asserting the approval mentions the path. Now headed `--- /dev/null / +++ b/<path>`.
 
 **The test-output parsers had no tests, and it showed.** `_parse_pytest` only read lines containing `=`,
 so it never parsed `pytest -q` — this project's own fallback test command — for a pass or a failure. It
@@ -121,8 +133,7 @@ graceful fallback hides the bug that triggers it; test the parser on the shape y
 inside a Python string in a heredoc into a real newline several separate times, producing unterminated string
 literals that ruff and mypy caught. The Write and Edit tools preserve escapes exactly.
 
-**Also outstanding:** (1) the rest of I3 — `/doc` and `/refactor`, batch approval UI, and growing the task
-eval to 10 tasks. (2) **batch review** (§6.4) —
+**Also outstanding:** (1) the rest of I3 — batch approval UI, and growing the task eval to 10 tasks. (2) **batch review** (§6.4) —
 needs a loop pre-pass that prepares every write in a multi-write step and one review screen;
 `cli/approval.batch_blockers` is already written and tested. (3) **The 9b half of the task eval** — now
 possible, since the GPU works. (4) I4 and Phase 3 are not started.

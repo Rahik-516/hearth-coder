@@ -369,7 +369,9 @@ class WriteFileTool(Tool[WriteFileArgs]):
 
         verb = "overwrite" if existing else "create"
         preview = (
-            unified_diff(before_text, new_text, path=relative) if existing else _new_file_preview(new_text)
+            unified_diff(before_text, new_text, path=relative)
+            if existing
+            else _new_file_preview(new_text, path=relative)
         )
 
         return Prepared(
@@ -842,12 +844,20 @@ def _secret_badges(before: str, after: str) -> tuple[str, ...]:
     return ("SECRET?",) if any(find_secrets(line) for line in added) else ()
 
 
-def _new_file_preview(text: str, *, limit: int = 60) -> str:
+def _new_file_preview(text: str, *, path: str, limit: int = 60) -> str:
+    """The approval preview for a file that does not exist yet.
+
+    **Headed with the path**, in the same ``---``/``+++`` shape a diff of an edit has. It did
+    not use to be, and the omission mattered: an edit's diff names its file in the header,
+    but a new file's preview was only the numbered content, so the person approving was
+    shown *what* would be written without being told *where*. For a tool whose whole
+    approval is "you saw exactly what will happen", the destination is half of it.
+    """
     lines = text.splitlines()
     shown = "\n".join(f"{number:>5}| {line}" for number, line in enumerate(lines[:limit], start=1))
     if len(lines) > limit:
         shown += f"\n      … {len(lines) - limit} more line(s)"
-    return shown
+    return f"--- /dev/null\n+++ b/{path}  (new file, {len(lines)} line(s))\n{shown}"
 
 
 def _commit(context: ToolContext, prepared: Prepared, *, verb: str) -> ToolResult:

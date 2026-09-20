@@ -347,3 +347,77 @@ async def test_test_is_unavailable_without_a_gateway(repo: Path, store: SessionS
     await repl._handle_command("/test a.py")
 
     assert "unavailable" in console.export_text()
+
+
+# ---------------------------------------------------------------------- /doc
+
+
+async def test_doc_with_an_unknown_kind_prints_usage(repo: Path, store: SessionStore) -> None:
+    repl, console, _provider = build_repl(repo, store, "x")
+
+    await repl._handle_command("/doc poetry")
+
+    assert "usage" in console.export_text()
+    assert repl.session.mode is Mode.CHAT
+
+
+async def test_doc_without_an_index_says_to_index(repo: Path, store: SessionStore) -> None:
+    """The document is built from the index, so there is nothing to build from."""
+    repl, console, provider = build_repl(repo, store, "x")
+
+    await repl._handle_command("/doc architecture")
+
+    output = console.export_text()
+    assert "hearth index" in output
+    assert provider.requests == []
+    assert repl.session.mode is Mode.CHAT, "no mode switch for a command that did not run"
+
+
+async def test_doc_runs_the_workflow_in_agent_mode_and_reports(
+    repo: Path, store: SessionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hearth.workflows.docs import DocOutcome
+
+    calls: list[dict] = []
+
+    async def fake(**kwargs):
+        calls.append(kwargs)
+        return DocOutcome(
+            "api",
+            "docs/API.md",
+            status="written",
+            warnings=["the text mentions `ghost.py`, which is not a file in this project"],
+        )
+
+    monkeypatch.setattr("hearth.cli.repl.run_doc", fake)
+    repl, console, _provider = build_repl(repo, store, "x")
+    repl.index_connection = connect(repo.parent / "idx.db")
+    migrate(repl.index_connection, database="index")
+
+    await repl._handle_command("/doc api")
+
+    output = console.export_text()
+    assert repl.session.mode is Mode.AGENT
+    assert calls[0]["kind"] == "api"
+    assert "wrote docs/API.md" in output
+    assert "ghost.py" in output, "warnings about invented paths reach the user"
+
+
+async def test_doc_reports_a_rejection_without_calling_it_an_error(
+    repo: Path, store: SessionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hearth.workflows.docs import DocOutcome
+
+    async def fake(**_kwargs):
+        return DocOutcome("readme", "README.md", status="rejected")
+
+    monkeypatch.setattr("hearth.cli.repl.run_doc", fake)
+    repl, console, _provider = build_repl(repo, store, "x")
+    repl.index_connection = connect(repo.parent / "idx2.db")
+    migrate(repl.index_connection, database="index")
+
+    await repl._handle_command("/doc readme")
+
+    output = console.export_text()
+    assert "was not written" in output
+    assert "not written:" not in output

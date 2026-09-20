@@ -21,6 +21,7 @@ SLASH_COMMANDS: dict[str, str] = {
     "/mode": "show or switch mode: chat, plan or agent",
     "/plan": "work out a plan for a task, without editing anything",
     "/execute": "carry out the approved plan",
+    "/doc": "generate architecture, readme or api documentation from the index",
     "/refactor": "plan and carry out a change to a symbol, then check its callers and tests",
     "/test": "write tests for a file or symbol, run them, and fix failures",
     "/commit": "write a message for the staged changes and commit them",

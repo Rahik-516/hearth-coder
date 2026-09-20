@@ -41,6 +41,7 @@ from hearth.safety.checkpoints import CheckpointStore
 from hearth.storage.index_repo import IndexRepository
 from hearth.tools.gateway import ToolGateway
 from hearth.workflows.commit import run_commit
+from hearth.workflows.docs import DOC_PATHS, run_doc
 from hearth.workflows.refactor import (
     impact_report,
     prepare_refactor,
@@ -221,6 +222,8 @@ class ChatREPL:
                 self._show_or_set_model(argument)
             case "/mode":
                 self._show_or_set_mode(argument)
+            case "/doc":
+                await self._doc(argument)
             case "/refactor":
                 await self._refactor(argument)
             case "/test":
@@ -437,6 +440,58 @@ class ChatREPL:
                 f"[yellow]note:[/yellow] {target.path} was changed during this run. The task was "
                 "to test it as it is — check the change, or /undo it."
             )
+
+    async def _doc(self, argument: str) -> None:
+        """`/doc architecture | readme | api`: a document built from the index, then approved."""
+        kind = argument.strip().lower()
+        if kind not in DOC_PATHS:
+            self.console.print("[yellow]usage:[/yellow] /doc architecture | readme | api")
+            return
+
+        repository = self._target_repository()
+        if self.gateway is None or repository is None:
+            self.console.print(
+                "[yellow]/doc is unavailable in this session[/yellow] — it builds the document "
+                "from the index, so the repository has to be indexed (`hearth index`)"
+            )
+            return
+
+        # The document is written with `write_file`, which policy refuses outside agent mode.
+        if self.session.mode is not Mode.AGENT:
+            self.session.switch_mode(Mode.AGENT)
+            self.console.print("[dim]mode: agent — the file will be shown to you before it is written[/dim]")
+
+        root = self.workspace or Path(self.session.workspace)
+        try:
+            outcome = await self._cancellable(
+                run_doc(
+                    kind=kind,  # type: ignore[arg-type]
+                    runner=self.runner,
+                    session=self.session,
+                    gateway=self.gateway,
+                    root=root,
+                    repository=repository,
+                )
+            )
+        except LLMError as exc:
+            self.console.print(f"[red]{exc}[/red]")
+            return
+        if outcome is None:
+            return
+
+        for warning in outcome.warnings:
+            self.console.print(f"[yellow]check:[/yellow] {warning}", markup=True)
+
+        if outcome.status == "written":
+            self.console.print(f"[green]wrote {outcome.path}[/green]")
+        elif outcome.status == "rejected":
+            self.console.print(f"[dim]{outcome.path} was not written[/dim]")
+        elif outcome.status == "refused":
+            self.console.print(f"[yellow]{outcome.detail}[/yellow]")
+        else:
+            self.console.print(f"[red]not written:[/red] {outcome.detail}")
+            for problem in outcome.problems:
+                self.console.print(f"  - {problem}", markup=False)
 
     async def _refactor(self, argument: str) -> None:
         """`/refactor <symbol> <goal>`: the plan flow, with facts before and checks after.

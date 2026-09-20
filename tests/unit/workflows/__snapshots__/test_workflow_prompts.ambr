@@ -82,6 +82,64 @@
   {{diff}}
   '''
 # ---
+# name: test_prompt_snapshot[workflows/doc_architecture]
+  '''
+  Write the overview paragraph for the architecture document of a software project.
+  
+  Below are facts gathered from the project's own files. Use only these. Do not name a
+  component, technology, service or file that is not listed, and do not describe behaviour you
+  cannot see evidence of here.
+  
+  Write two to four sentences of plain prose: what the project is for, and how its components
+  fit together at the highest level. No headings, no bullet points, no code blocks — the
+  document around your paragraph supplies all structure.
+  
+  Project: {{name}}
+  Description from its manifest: {{description}}
+  
+  Components:
+  {{components}}
+  
+  Entry points:
+  {{entry_points}}
+  '''
+# ---
+# name: test_prompt_snapshot[workflows/doc_component]
+  '''
+  In one sentence of at most 25 words, say what the `{{component}}` component of the
+  `{{project}}` project is responsible for.
+  
+  Use only the files and symbols listed below. Do not guess at responsibilities they do not
+  show. Reply with the sentence alone — no bullet, no quotation marks, no preamble.
+  
+  Files:
+  {{files}}
+  
+  Top-level symbols:
+  {{symbols}}
+  '''
+# ---
+# name: test_prompt_snapshot[workflows/doc_readme]
+  '''
+  Write the overview section of a README for a software project.
+  
+  Below are facts gathered from the project's own files. Use only these. Do not invent features,
+  installation steps, badges or links, and do not name anything that is not listed.
+  
+  Write two to four sentences of plain prose for someone deciding whether this project is
+  relevant to them: what it is and what it does. No headings, no bullet points, no code blocks —
+  the README around your paragraph supplies all structure, including usage and tests.
+  
+  Project: {{name}}
+  Description from its manifest: {{description}}
+  
+  Components:
+  {{components}}
+  
+  Entry points:
+  {{entry_points}}
+  '''
+# ---
 # name: test_prompt_snapshot[workflows/review]
   '''
   Review the changes below as a careful colleague would. You are looking for problems the

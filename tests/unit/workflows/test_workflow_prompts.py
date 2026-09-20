@@ -15,6 +15,9 @@ WORKFLOW_PROMPTS = [
     "workflows/review",
     "workflows/test",
     "workflows/test_fix",
+    "workflows/doc_architecture",
+    "workflows/doc_readme",
+    "workflows/doc_component",
     "plan_extract",
     "mode_plan",
 ]

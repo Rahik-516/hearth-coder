@@ -399,6 +399,39 @@ class IndexRepository:
         ).fetchall()
         return [cast("SearchHit", dict(row)) for row in rows]
 
+    def symbols_for_docs(self) -> list[dict[str, object]]:
+        """Every symbol with its file and enclosing symbol, in reading order.
+
+        ``parent`` is None for a top-level definition and the enclosing symbol's name for a
+        method or nested definition. One query for the whole index rather than one per file:
+        documentation generation walks everything, and a thousand round trips is a thousand
+        statements for what SQLite answers in one.
+        """
+        rows = self._connection.execute(
+            """
+            SELECT f.path, s.name, s.kind, s.signature, s.start_line, s.end_line,
+                   s.exported, p.name AS parent
+            FROM symbols s
+            JOIN files f ON f.id = s.file_id
+            LEFT JOIN symbols p ON p.id = s.parent_id
+            ORDER BY f.path, s.start_line
+            """
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def reference_pairs(self) -> list[tuple[str, str]]:
+        """Every ``(file path, referenced name)`` pair, for building a dependency picture.
+
+        Distinct, because a file that calls ``compute`` forty times depends on it once.
+        """
+        rows = self._connection.execute(
+            """
+            SELECT DISTINCT f.path, r.name
+            FROM refs r JOIN files f ON f.id = r.file_id
+            """
+        ).fetchall()
+        return [(str(row["path"]), str(row["name"])) for row in rows]
+
     def find_references(self, name: str, *, limit: int = 200) -> list[dict[str, object]]:
         """Places a name is used: ``path``, ``line`` and ``kind`` (call, type, attribute…).
 

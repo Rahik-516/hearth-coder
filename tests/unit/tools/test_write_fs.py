@@ -499,3 +499,34 @@ def test_a_failing_reindex_does_not_fail_the_write(context: ToolContext, workspa
 
     assert result.ok
     assert (workspace / "a.py").read_text(encoding="utf-8").count("return 0") == 1
+
+
+# ---------------------------------------------- a new file's preview names its path
+
+
+def test_creating_a_file_shows_where_it_will_be_created(context: ToolContext) -> None:
+    """The approval preview for a new file used to be only the numbered content.
+
+    An edit's diff names its file in the header; a new file's preview did not, so the
+    person approving saw *what* would be written and was never told *where*. The
+    destination is half of "you saw exactly what will happen".
+    """
+    tool = WriteFileTool()
+    args = tool.args_model.model_validate({"path": "pkg/new_module.py", "content": "x = 1\n"})
+
+    prepared = tool.prepare(args, context)
+
+    assert "pkg/new_module.py" in prepared.preview
+    assert prepared.preview.startswith("--- /dev/null\n+++ b/pkg/new_module.py")
+    assert "x = 1" in prepared.preview
+
+
+def test_the_new_file_preview_reports_its_size(context: ToolContext) -> None:
+    tool = WriteFileTool()
+    body = "".join(f"line {n}\n" for n in range(100))
+    args = tool.args_model.model_validate({"path": "big.txt", "content": body})
+
+    prepared = tool.prepare(args, context)
+
+    assert "100 line(s)" in prepared.preview
+    assert "40 more line(s)" in prepared.preview
