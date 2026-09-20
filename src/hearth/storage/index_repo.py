@@ -399,6 +399,25 @@ class IndexRepository:
         ).fetchall()
         return [cast("SearchHit", dict(row)) for row in rows]
 
+    def find_references(self, name: str, *, limit: int = 200) -> list[dict[str, object]]:
+        """Places a name is used: ``path``, ``line`` and ``kind`` (call, type, attribute…).
+
+        By simple name, so two unrelated ``parse`` functions share references. That is the
+        index's real precision, and callers present the result as "known references, may be
+        incomplete or include namesakes" rather than as a call graph.
+        """
+        rows = self._connection.execute(
+            """
+            SELECT f.path, r.line, r.kind
+            FROM refs r JOIN files f ON f.id = r.file_id
+            WHERE r.name = ? COLLATE NOCASE
+            ORDER BY f.path, r.line
+            LIMIT ?
+            """,
+            (name, limit),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
     def find_symbol(self, name: str, *, limit: int = 20) -> list[dict[str, object]]:
         rows = self._connection.execute(
             """

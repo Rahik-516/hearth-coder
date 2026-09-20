@@ -41,6 +41,12 @@ from hearth.safety.checkpoints import CheckpointStore
 from hearth.storage.index_repo import IndexRepository
 from hearth.tools.gateway import ToolGateway
 from hearth.workflows.commit import run_commit
+from hearth.workflows.refactor import (
+    impact_report,
+    prepare_refactor,
+    snapshot_files,
+    verify_with_tests,
+)
 from hearth.workflows.review import run_review
 from hearth.workflows.targets import TargetError, resolve_target
 from hearth.workflows.test_writer import run_test_workflow
@@ -215,6 +221,8 @@ class ChatREPL:
                 self._show_or_set_model(argument)
             case "/mode":
                 self._show_or_set_mode(argument)
+            case "/refactor":
+                await self._refactor(argument)
             case "/test":
                 await self._test(argument)
             case "/commit":
@@ -429,6 +437,68 @@ class ChatREPL:
                 f"[yellow]note:[/yellow] {target.path} was changed during this run. The task was "
                 "to test it as it is — check the change, or /undo it."
             )
+
+    async def _refactor(self, argument: str) -> None:
+        """`/refactor <symbol> <goal>`: the plan flow, with facts before and checks after.
+
+        Composition, not a new loop. The task handed to `/plan` already carries the
+        index's known references; the plan is reviewed exactly as any other; `/execute`
+        carries it out under the same approvals. The command adds what only a refactor
+        needs: a snapshot of every file that references the symbol beforehand, and
+        afterwards a report of which were touched plus a run of the test suite that the
+        command itself performs.
+        """
+        if self.gateway is None:
+            self.console.print(
+                "[yellow]/refactor is unavailable in this session[/yellow] — it needs a tool "
+                "gateway, which requires an indexed workspace"
+            )
+            return
+
+        root = self.workspace or Path(self.session.workspace)
+        prep = prepare_refactor(root, argument, repository=self._target_repository())
+        if prep.refusal or prep.task is None or prep.target is None:
+            self.console.print(f"[yellow]{prep.refusal}[/yellow]")
+            return
+
+        self.console.print(
+            f"[dim]refactor {prep.target.describe()} — "
+            f"{len(prep.references)} file(s) reference it[/dim]"
+        )
+        tracked = sorted({*prep.references, prep.target.path})
+        before = snapshot_files(root, tracked)
+
+        await self._plan(prep.task)
+        if self._plans.approved is None:
+            # Rejected, or the model produced no plan; `_plan` has already said which.
+            return
+
+        await self._execute()
+
+        report = impact_report(before, snapshot_files(root, tracked))
+        self.console.print()
+        self.console.print(
+            f"[bold]{len(report.modified)} of {report.total}[/bold] file(s) touching "
+            f"`{prep.target.symbol}` were modified"
+        )
+        for path in report.modified:
+            self.console.print(f"  [green]changed[/green]    {path}", markup=True)
+        if report.untouched:
+            self.console.print(
+                "[yellow]not changed[/yellow] — check these are still correct:"
+            )
+            for path in report.untouched:
+                self.console.print(f"  {path}", markup=False)
+
+        verification = await self._cancellable(verify_with_tests(self.gateway))
+        if verification is None:
+            return
+        if verification.passed is None:
+            self.console.print(f"[yellow]tests not run:[/yellow] {verification.summary}")
+        elif verification.passed:
+            self.console.print(f"[green]tests pass:[/green] {verification.summary}")
+        else:
+            self.console.print(f"[red]tests fail:[/red] {verification.summary}", markup=True)
 
     async def _commit(self) -> None:
         """`/commit`: message from the staged diff, then a normal approved commit."""
