@@ -22,6 +22,7 @@ from hearth.config import paths
 from hearth.config.loader import LoadedConfig, load_config
 from hearth.core.bus import EventBus
 from hearth.core.limits import TurnLimits
+from hearth.core.plan import PlanStore, build_execute_message
 from hearth.core.runner import AgentTurnResult, ChatRunner
 from hearth.core.session import Mode, SessionStore
 from hearth.evals.retrieval_eval import (
@@ -39,6 +40,7 @@ from hearth.indexing.pipeline import Indexer
 from hearth.llm.errors import LLMError
 from hearth.llm.ollama_provider import OllamaProvider
 from hearth.llm.profiles import ProfileRegistry
+from hearth.llm.types import ThinkLevel
 from hearth.retrieval.engine import RetrievalEngine
 from hearth.retrieval.repomap import RepoMapBuilder
 from hearth.safety.checkpoints import CheckpointStore
@@ -313,6 +315,11 @@ def eval_tasks(
     only: list[str] = typer.Option(None, "--task", "-t", help="Run only these tasks."),
     keep: bool = typer.Option(False, "--keep", help="Keep the disposable workspaces."),
     max_steps: int = typer.Option(None, "--max-steps", help="Override the profile's step limit."),
+    plan: bool = typer.Option(
+        False,
+        "--plan/--no-plan",
+        help="Plan first (read-only), auto-approve the plan, then execute it.",
+    ),
 ) -> None:
     """Run the agent task suite and report pass/fail with timings.
 
@@ -335,13 +342,11 @@ def eval_tasks(
 
     with tempfile.TemporaryDirectory(prefix="hearth-task-eval-") as scratch:
         for spec in selected:
-            workspace = prepare_workspace(
-                spec, repo_root=root, destination=Path(scratch) / spec.name
-            )
+            workspace = prepare_workspace(spec, repo_root=root, destination=Path(scratch) / spec.name)
             console.print(f"[dim]{spec.name}: {workspace}[/dim]")
             started = time.monotonic()
 
-            result = _run_task(workspace, chat_model, spec.prompt, max_steps=max_steps)
+            result = _run_task(workspace, chat_model, spec.prompt, max_steps=max_steps, plan=plan)
             report.outcomes.append(
                 score(
                     spec,
@@ -358,11 +363,15 @@ def eval_tasks(
                 console.print(f"[dim]kept: {kept}[/dim]")
 
     console.print()
+    mode_label = "plan → execute (plan auto-approved)" if plan else "plain agent loop"
+    console.print(f"[dim]model {chat_model} · {mode_label}[/dim]")
     console.print(report.render())
     raise typer.Exit(0 if report.passed == report.total else 1)
 
 
-def _run_task(workspace: Path, model: str, prompt: str, *, max_steps: int | None) -> AgentTurnResult:
+def _run_task(
+    workspace: Path, model: str, prompt: str, *, max_steps: int | None, plan: bool = False
+) -> AgentTurnResult:
     """One headless agent run against a disposable workspace."""
     from hearth.cli.chat_commands import _build_gateway, _build_runtime, _open_state
 
@@ -413,17 +422,56 @@ def _run_task(workspace: Path, model: str, prompt: str, *, max_steps: int | None
         repo_map=RepoMapBuilder(index_connection) if index_connection is not None else None,
     )
     schemas = gateway_schemas(loaded, profile)
+    think: ThinkLevel = "medium" if profile.supports_thinking else "off"
+
+    async def agent_only() -> AgentTurnResult:
+        return await runner.run_agent_turn(
+            session, prompt, gateway=gateway, tool_schemas=schemas, limits=limits, think=think
+        )
+
+    async def plan_then_execute() -> AgentTurnResult:
+        """The `/plan` → approve → `/execute` pipeline, with the harness as the approver.
+
+        A person would review the plan here and may correct it; the harness cannot, so it
+        approves whatever the model produced. That makes this a measure of the pipeline
+        without human correction — a floor for what plan mode gives a real user, not an
+        estimate of it. A plan the model fails to produce scores as a failed task.
+        """
+        session.switch_mode(Mode.PLAN)
+        planned = await runner.run_plan_turn(
+            session,
+            prompt,
+            gateway=gateway,
+            tool_schemas=gateway_schemas(loaded, profile, mode="plan"),
+            limits=limits,
+            think=think,
+        )
+        if planned.plan is None:
+            console.print(f"[red]no plan:[/red] {planned.error}")
+            return AgentTurnResult(
+                answer="", reason="no_plan", steps=planned.steps, tool_calls=planned.tool_calls
+            )
+
+        store_ = PlanStore()
+        store_.propose(planned.plan, plan_id="eval")
+        approved = store_.approve("eval", workspace=workspace)
+
+        session.switch_mode(Mode.AGENT)
+        executed = await runner.run_agent_turn(
+            session,
+            build_execute_message(approved),
+            gateway=gateway,
+            tool_schemas=schemas,
+            limits=limits,
+            think=think,
+        )
+        executed.steps += planned.steps
+        executed.tool_calls += planned.tool_calls
+        return executed
 
     async def main() -> AgentTurnResult:
         try:
-            return await runner.run_agent_turn(
-                session,
-                prompt,
-                gateway=gateway,
-                tool_schemas=schemas,
-                limits=limits,
-                think="medium" if profile.supports_thinking else "off",
-            )
+            return await (plan_then_execute() if plan else agent_only())
         finally:
             await bus.close()
             await provider.close()
@@ -435,12 +483,10 @@ def _run_task(workspace: Path, model: str, prompt: str, *, max_steps: int | None
         return AgentTurnResult(answer="", reason="error")
 
 
-def gateway_schemas(loaded: LoadedConfig, profile: object) -> list[dict[str, object]]:
-    """The tool schemas an agent session is shown, for the configured project."""
+def gateway_schemas(loaded: LoadedConfig, profile: object, *, mode: str = "agent") -> list[dict[str, object]]:
+    """The tool schemas a session is shown in ``mode``, for the configured project."""
     registry = build_default_registry(test_command=loaded.config.project.test_command)
-    return registry.for_mode(
-        "agent", tool_reliability=getattr(profile, "tool_reliability", "high")
-    ).schemas
+    return registry.for_mode(mode, tool_reliability=getattr(profile, "tool_reliability", "high")).schemas
 
 
 def _index_workspace(workspace: Path) -> None:
