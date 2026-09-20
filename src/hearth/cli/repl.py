@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import sqlite3
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -37,9 +38,12 @@ from hearth.core.session import Mode, Session, SessionStore
 from hearth.llm.errors import LLMError
 from hearth.llm.types import Message
 from hearth.safety.checkpoints import CheckpointStore
+from hearth.storage.index_repo import IndexRepository
 from hearth.tools.gateway import ToolGateway
 from hearth.workflows.commit import run_commit
 from hearth.workflows.review import run_review
+from hearth.workflows.targets import TargetError, resolve_target
+from hearth.workflows.test_writer import run_test_workflow
 
 _BANNER = """[bold]Hearth[/bold] — ask about this repository.
 [dim]/help for commands · @path to pin a file · Ctrl+C cancels a reply · Ctrl+D exits[/dim]"""
@@ -67,6 +71,9 @@ class ChatREPL:
     #: the approved plan's edit grants here and `/plan` revokes them; mutating it is how
     #: a frontend widens permissions, which is why nothing else may hold a reference.
     grants: set[str] | None = None
+    #: Index connection, for resolving `/test <symbol>` to a file. None means a target
+    #: has to be a path.
+    index_connection: sqlite3.Connection | None = None
 
     _renderer: ChatRenderer = field(init=False)
     _last_sources: list[RetrievalPerformed] = field(default_factory=list, init=False)
@@ -208,6 +215,8 @@ class ChatREPL:
                 self._show_or_set_model(argument)
             case "/mode":
                 self._show_or_set_mode(argument)
+            case "/test":
+                await self._test(argument)
             case "/commit":
                 await self._commit()
             case "/review":
@@ -341,6 +350,85 @@ class ChatREPL:
             pass
         self.console.print("\n[yellow]cancelled[/yellow]")
         return None
+
+    def _target_repository(self) -> IndexRepository | None:
+        """The index, for resolving a symbol name to a file. None when there is no index."""
+        if self.index_connection is None:
+            return None
+        return IndexRepository(self.index_connection)
+
+    def _persist_history_since(self, start: int) -> None:
+        """Save the messages a workflow added, as `_ask` does for an ordinary turn.
+
+        Workflows drive the runner directly rather than through `_ask`, so without this
+        their turns would exist in memory only and `/resume` would find a conversation with
+        a hole exactly where the work happened.
+        """
+        for message in self.session.history[start:]:
+            self.store.save_message(self.session, message)
+
+    async def _test(self, argument: str) -> None:
+        """`/test <target>`: write tests, run them, and fix them until they pass."""
+        if not argument:
+            self.console.print("[yellow]usage:[/yellow] /test <file, symbol, or path::symbol>")
+            return
+        if self.gateway is None:
+            self.console.print(
+                "[yellow]/test is unavailable in this session[/yellow] — it needs a tool "
+                "gateway, which requires an indexed workspace"
+            )
+            return
+
+        root = self.workspace or Path(self.session.workspace)
+        target = resolve_target(root, argument, repository=self._target_repository())
+        if isinstance(target, TargetError):
+            self.console.print(f"[yellow]{target.message}[/yellow]", markup=True)
+            return
+
+        if self.session.mode is not Mode.AGENT:
+            self.session.switch_mode(Mode.AGENT)
+            self.console.print("[dim]mode: agent — edits and test runs will ask[/dim]")
+
+        self.console.print(f"[dim]writing tests for {target.describe()}[/dim]")
+        start = len(self.session.history)
+        try:
+            outcome = await self._cancellable(
+                run_test_workflow(
+                    runner=self.runner,
+                    session=self.session,
+                    gateway=self.gateway,
+                    root=root,
+                    target=target,
+                    tool_schemas=self._schemas_for(Mode.AGENT),
+                )
+            )
+        except LLMError as exc:
+            self.console.print(f"[red]{exc}[/red]")
+            return
+        finally:
+            self._persist_history_since(start)
+        if outcome is None:
+            return
+
+        self.console.print()
+        if outcome.status == "passed":
+            files = ", ".join(outcome.test_files)
+            rounds = "" if outcome.iterations == 1 else f" after {outcome.iterations - 1} fix round(s)"
+            self.console.print(f"[green]tests pass[/green]{rounds}: {files}")
+        elif outcome.status == "failed":
+            self.console.print(f"[red]tests still fail:[/red] {outcome.detail}")
+            if outcome.summary:
+                self.console.print(outcome.summary, markup=False)
+        elif outcome.status == "refused":
+            self.console.print(f"[yellow]{outcome.detail}[/yellow]")
+        else:
+            self.console.print(f"[yellow]{outcome.detail}[/yellow]")
+
+        if outcome.source_modified:
+            self.console.print(
+                f"[yellow]note:[/yellow] {target.path} was changed during this run. The task was "
+                "to test it as it is — check the change, or /undo it."
+            )
 
     async def _commit(self) -> None:
         """`/commit`: message from the staged diff, then a normal approved commit."""

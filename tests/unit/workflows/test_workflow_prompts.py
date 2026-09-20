@@ -10,7 +10,14 @@ import pytest
 
 from hearth.prompts import load
 
-WORKFLOW_PROMPTS = ["workflows/commit", "workflows/review", "plan_extract", "mode_plan"]
+WORKFLOW_PROMPTS = [
+    "workflows/commit",
+    "workflows/review",
+    "workflows/test",
+    "workflows/test_fix",
+    "plan_extract",
+    "mode_plan",
+]
 
 
 @pytest.mark.parametrize("name", WORKFLOW_PROMPTS)

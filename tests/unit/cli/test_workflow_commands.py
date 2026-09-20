@@ -219,3 +219,131 @@ async def test_review_prints_code_in_square_brackets_verbatim(
     await repl._handle_command("/review")
 
     assert "items[0]" in console.export_text()
+
+
+# --------------------------------------------------------------------- /test
+
+
+def stub_workflow(monkeypatch: pytest.MonkeyPatch, outcome, *, adds_history: bool = False):
+    """Replace the workflow with a canned outcome, recording how it was called.
+
+    The workflow itself is tested in `test_workflow_test_writer.py` against a real pytest
+    run. What is under test here is what the *command* adds around it.
+    """
+    from hearth.workflows.test_writer import TestWorkflowOutcome  # noqa: F401
+
+    calls: list[dict] = []
+
+    async def fake(**kwargs):
+        calls.append(kwargs)
+        if adds_history:
+            kwargs["session"].add_user("write tests")
+            kwargs["session"].add_assistant("wrote tests")
+        return outcome
+
+    monkeypatch.setattr("hearth.cli.repl.run_test_workflow", fake)
+    return calls
+
+
+async def test_test_without_a_target_prints_usage(repo: Path, store: SessionStore) -> None:
+    repl, console, _provider = build_repl(repo, store, "x")
+
+    await repl._handle_command("/test")
+
+    assert "usage" in console.export_text()
+
+
+async def test_test_with_an_unresolvable_target_says_why_and_runs_nothing(
+    repo: Path, store: SessionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hearth.workflows.test_writer import TestWorkflowOutcome
+
+    calls = stub_workflow(monkeypatch, TestWorkflowOutcome("passed"))
+    repl, console, _provider = build_repl(repo, store, "x")
+
+    await repl._handle_command("/test nope.py")
+
+    assert "not a file" in console.export_text()
+    assert calls == []
+    assert repl.session.mode is Mode.CHAT, "no mode switch for a command that did not run"
+
+
+async def test_test_switches_to_agent_and_reports_a_pass(
+    repo: Path, store: SessionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hearth.workflows.test_writer import TestWorkflowOutcome
+
+    calls = stub_workflow(
+        monkeypatch,
+        TestWorkflowOutcome("passed", test_files=["tests/test_a.py"], iterations=2),
+    )
+    repl, console, _provider = build_repl(repo, store, "x")
+
+    await repl._handle_command("/test a.py")
+
+    output = console.export_text()
+    assert repl.session.mode is Mode.AGENT
+    assert "tests pass" in output
+    assert "after 1 fix round" in output
+    assert calls[0]["target"].path == "a.py"
+
+
+async def test_test_reports_a_failure_with_the_last_summary(
+    repo: Path, store: SessionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hearth.workflows.test_writer import TestWorkflowOutcome
+
+    stub_workflow(
+        monkeypatch,
+        TestWorkflowOutcome(
+            "failed", detail="still failing after 3 fix round(s).", summary="1 failed: test_x [tests]"
+        ),
+    )
+    repl, console, _provider = build_repl(repo, store, "x")
+
+    await repl._handle_command("/test a.py")
+
+    output = console.export_text()
+    assert "still fail" in output
+    assert "1 failed: test_x [tests]" in output, "runner output is printed verbatim"
+
+
+async def test_test_warns_when_the_source_was_edited(
+    repo: Path, store: SessionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from hearth.workflows.test_writer import TestWorkflowOutcome
+
+    stub_workflow(monkeypatch, TestWorkflowOutcome("passed", test_files=["t.py"], source_modified=True))
+    repl, console, _provider = build_repl(repo, store, "x")
+
+    await repl._handle_command("/test a.py")
+
+    output = console.export_text()
+    assert "was changed during this run" in output
+    assert "/undo" in output
+
+
+async def test_test_persists_the_turns_the_workflow_added(
+    repo: Path, store: SessionStore, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Workflows drive the runner directly, not through `_ask`, so without this their
+    turns would live in memory only and `/resume` would find a hole where the work was."""
+    from hearth.workflows.test_writer import TestWorkflowOutcome
+
+    stub_workflow(monkeypatch, TestWorkflowOutcome("passed", test_files=["t.py"]), adds_history=True)
+    repl, _console, _provider = build_repl(repo, store, "x")
+
+    await repl._handle_command("/test a.py")
+
+    resumed = store.resume(repl.session.id)
+    assert resumed is not None
+    assert [m.content for m in resumed.history] == ["write tests", "wrote tests"]
+
+
+async def test_test_is_unavailable_without_a_gateway(repo: Path, store: SessionStore) -> None:
+    repl, console, _provider = build_repl(repo, store, "x")
+    repl.gateway = None
+
+    await repl._handle_command("/test a.py")
+
+    assert "unavailable" in console.export_text()

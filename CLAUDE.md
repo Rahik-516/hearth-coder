@@ -104,8 +104,25 @@ it was read and `is_sensitive_read` never saw the real path. The fallback now sk
 workspace and sensitive targets, matching ripgrep, which does not follow symlinks. Exemptions in the guard
 are listed per file so a new tool touching the filesystem has to be argued for.
 
-**Also outstanding:** (1) the rest of I3 — the five workflows (`/test`, `/doc`, `/review`, `/commit`,
-`/refactor`), batch approval UI, and growing the task eval to 10 tasks. (2) **batch review** (§6.4) —
+**Workflows (`workflows/`) follow "code does what code can do".** `/commit` and `/review` (both diff-based,
+sharing `workflows/diffs.py`) and `/test` have landed. A workflow's instructions go in the *user* message,
+never the system prompt, so invoking one does not bump the cache epoch. `ChatRunner.complete` is the
+standalone one-shot call. `/review` verifies every `path:line` citation against the numbered diff the model
+was shown and lists the ones that do not check out; `/test` runs the tests **itself** through the gateway
+rather than trusting the model's claim to have run them — the project has already been bitten by that.
+
+**The test-output parsers had no tests, and it showed.** `_parse_pytest` only read lines containing `=`,
+so it never parsed `pytest -q` — this project's own fallback test command — for a pass or a failure. It
+degraded exactly as designed (raw output instead of a one-liner), which is why nothing failed loudly.
+Fixed, along with `TestSummary.ok` no longer being true for a run in which zero tests executed. Lesson: a
+graceful fallback hides the bug that triggers it; test the parser on the shape you actually run.
+
+**Writing code with backslash escapes: use Write/Edit, not a bash heredoc.** The Bash tool here turned a backslash-n
+inside a Python string in a heredoc into a real newline several separate times, producing unterminated string
+literals that ruff and mypy caught. The Write and Edit tools preserve escapes exactly.
+
+**Also outstanding:** (1) the rest of I3 — `/doc` and `/refactor`, batch approval UI, and growing the task
+eval to 10 tasks. (2) **batch review** (§6.4) —
 needs a loop pre-pass that prepares every write in a multi-write step and one review screen;
 `cli/approval.batch_blockers` is already written and tested. (3) **The 9b half of the task eval** — now
 possible, since the GPU works. (4) I4 and Phase 3 are not started.

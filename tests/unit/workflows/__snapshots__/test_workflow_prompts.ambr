@@ -117,3 +117,66 @@
   {{diff}}
   '''
 # ---
+# name: test_prompt_snapshot[workflows/test]
+  '''
+  Write tests for {{target}}.
+  
+  ### Where and how
+  
+  - Write the tests to `{{test_path}}`, using the `{{framework}}` conventions of this project.
+  - Notes about that location:
+  {{notes}}
+  
+  {{sample}}
+  
+  ### What to do
+  
+  1. Read `{{source_path}}` first. Test what the code *does*, which you can only know by reading
+     it — not what its name suggests.
+  2. Write the test file with `write_file` (or `edit_file` if it already exists). Cover the normal
+     case, the edges the code visibly handles (empty input, zero, boundaries) and the failures it
+     raises or returns.
+  3. Stop. **Do not run the tests yourself.** They are run for you after you finish, and if any
+     fail you will be shown exactly which and why.
+  
+  ### Rules
+  
+  - **Do not edit `{{source_path}}` or any other non-test file.** Your task is to test the code as
+    it is. If a test you believe is correct fails because the code looks wrong, say so in your
+    final message instead of changing the code.
+  - Assert on behaviour, not on implementation. A test that mirrors the code line for line proves
+    nothing and breaks on every refactor.
+  - Tests must be deterministic and offline: no network, no reliance on the current time or on
+    ordering, no files outside a temporary directory.
+  - Follow the sample's imports and naming. Do not add dependencies.
+  - Keep it proportionate. A handful of meaningful tests beats thirty near-duplicates.
+  
+  Finish with two or three sentences: which test file you wrote and what it covers.
+  '''
+# ---
+# name: test_prompt_snapshot[workflows/test_fix]
+  '''
+  The tests in {{files}} were run, and they did not pass. This is fix round {{iteration}} of
+  {{max}}.
+  
+  Result of the run:
+  
+  ```
+  {{summary}}
+  ```
+  
+  Read the failing test and the code it exercises, decide which of the two is wrong, and fix
+  it.
+  
+  - If **the test** is wrong — a bad expectation, a missing import, a misreading of the code —
+    fix the test.
+  - If **the code** looks wrong, do **not** edit it. Change the test only if you are sure the
+    expectation was mistaken; otherwise leave the failing test as it is and say in your final
+    message that the code appears to have a bug, and where. A test that has been bent to pass
+    against a bug is worse than a failing one.
+  - Do not delete or skip a failing test to make the run pass.
+  
+  Do not run the tests yourself; they are run again after you finish. End with one or two
+  sentences on what you changed and why.
+  '''
+# ---

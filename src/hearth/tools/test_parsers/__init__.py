@@ -67,10 +67,13 @@ class TestSummary:
     def ok(self) -> bool:
         """Whether the run passed.
 
-        An unparsed run is never ok. Treating "could not read the output" as success is
-        the one mistake here that would actively mislead the model into stopping.
+        Two things are never ok. An unparsed run: treating "could not read the output" as
+        success is the one mistake here that would actively mislead the model into
+        stopping. And a run in which nothing executed: zero tests "pass" vacuously, and a
+        file of tests that were never collected is exactly what a confused model writes.
+        Skipped tests count as having run, since they were collected and the suite said so.
         """
-        return self.parsed and self.failed == 0 and self.errors == 0
+        return self.parsed and self.total > 0 and self.failed == 0 and self.errors == 0
 
     def describe(self) -> str:
         """The line (or few) the model sees instead of the full output."""
@@ -109,7 +112,11 @@ def detect_framework(text: str) -> str | None:
         return "vitest"
     if re.search(r"^Tests:\s", text, re.MULTILINE) or " PASS " in text or " FAIL " in text:
         return "jest"
-    if "test session starts" in text or re.search(r"\b\d+ (?:passed|failed|error)\b", text):
+    if (
+        "test session starts" in text
+        or "no tests ran" in text
+        or re.search(r"\b\d+ (?:passed|failed|error|skipped)\b", text)
+    ):
         return "pytest"
     return None
 
@@ -144,19 +151,44 @@ _PYTEST_DURATION = re.compile(r"\bin\s+([\d.]+)s")
 _PYTEST_FAILED_LINE = re.compile(r"^(FAILED|ERROR)\s+(\S+?)(?:::(\S+))?\s*(?:-\s*(.*))?$", re.MULTILINE)
 
 
+#: The closing line under ``-q``, which has no ``=====`` banner:
+#: ``1 failed, 2 passed in 0.41s`` — optionally with a ``(0:00:00)`` clock after the time.
+_PYTEST_QUIET_SUMMARY = re.compile(
+    r"^\s*(?:\d+\s+\w+(?:,\s*)?)+\s+in\s+[\d.]+s\b", re.MULTILINE
+)
+_PYTEST_NO_TESTS = re.compile(r"\bno tests ran\b")
+
+
 def _parse_pytest(text: str) -> TestSummary:
     counts: dict[str, int] = {}
     # Only the summary lines carry counts; scanning the whole output would pick up numbers
-    # out of tracebacks and assertion messages.
+    # out of tracebacks and assertion messages. A summary line is either the banner form
+    # (``===== 1 failed, 2 passed in 0.4s =====``) or, under ``-q``, the same words with no
+    # banner. ``-q`` is this project's own default test command, so a parser that only knew
+    # the banner never once parsed a run of it — passing or failing — and the model was
+    # handed raw output instead of a one-line result.
+    quiet_lines = {match.group(0).strip() for match in _PYTEST_QUIET_SUMMARY.finditer(text)}
+
     for line in text.splitlines():
         if not re.search(r"\b(?:passed|failed|error|skipped|xfailed)\b", line):
             continue
-        if "=" not in line and "short test summary" not in line:
+        is_banner = "=" in line or "short test summary" in line
+        if not (is_banner or any(line.strip().startswith(quiet) for quiet in quiet_lines)):
             continue
         for amount, word in _PYTEST_COUNT.findall(line):
             counts[word] = max(counts.get(word, 0), int(amount))
 
     if not counts:
+        # `no tests ran` is a *readable* result — zero tests, exit code 5 — and different
+        # from output the parser cannot read. Reporting it as unparsed would tell the model
+        # nothing about why nothing happened.
+        if _PYTEST_NO_TESTS.search(text):
+            duration = _PYTEST_DURATION.search(text)
+            return TestSummary(
+                framework="pytest",
+                duration_s=float(duration.group(1)) if duration else None,
+                parsed=True,
+            )
         return TestSummary(framework="pytest", parsed=False)
 
     duration = _PYTEST_DURATION.search(text)

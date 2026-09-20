@@ -241,6 +241,7 @@ def _run_repl(root: Path, loaded: LoadedConfig, session: Session, store: Session
         checkpoints=checkpoints,
         gateway=gateway,
         grants=grants,
+        index_connection=index_connection,
     )
 
     async def main() -> None:
