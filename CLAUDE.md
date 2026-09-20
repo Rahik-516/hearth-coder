@@ -78,10 +78,79 @@ wrong for a branch switch, where it re-parsed all 400 byte-identical files. `ind
 detection to the given paths — scoping matters, since `detect_changes` derives deletions from "indexed
 but not scanned", so handing it the full index against a subset would delete everything else.
 
-**Also outstanding:** (1) **batch review** (§6.4) — needs a loop pre-pass that prepares every write in a
-multi-write step and one review screen; `cli/approval.batch_blockers` is already written and tested,
-and the roadmap names this the first thing to cut. (2) **The 9b half of the task eval** — now possible,
-since the GPU works. (3) I3, I4 and Phase 3 are not started.
+**I3 (plan mode and workflows).** Plan mode has landed: `/plan <task>` investigates with read-only tools and returns
+a structured plan, `/execute` switches to agent mode and carries it out. The turn is deliberately **two
+requests** — an ordinary agent loop with no `format` set, then an extraction that asks for the schema
+with the tools removed. A schema present while the model is still searching pulls it towards answering
+from the question rather than from the code, which is the thing plan mode exists to prevent; the tests
+therefore assert on `provider.requests`, because a single-request design also produces a right-looking
+plan some of the time.
+
+**A plan's file list is an input to the permission system, written by a model.** `core/plan.py`
+`scope_grants` treats it as hostile — traversal, absolute paths, `~`, Windows separators and
+`.git/**` are dropped from the grant set while the step survives and simply asks. Approval and granting
+are two separate questions, so an approved plan is not a blanket edit permission, and grants are
+revoked by a superseding plan and by `/clear`. They are spelled `edit:<path>`, reusing the existing
+session-grant mechanism rather than adding a second one beside it.
+
+`multi_edit`, `move_file` and `delete_file` have landed too. `multi_edit` is atomic (edits compose in
+memory; any failure writes nothing), `move_file` checkpoints **both** ends, and `delete_file` moves to
+a timestamped directory under Hearth's trash rather than unlinking.
+
+**The `tools/` path-jail grep guard now exists.** It had been documented here for months and was never
+written. Writing it surfaced a real gap: `grep`'s pure-Python fallback (used when ripgrep is absent) read
+files found by `rglob` without going through the jail, so a symlink inside the workspace pointing outside
+it was read and `is_sensitive_read` never saw the real path. The fallback now skips links that leave the
+workspace and sensitive targets, matching ripgrep, which does not follow symlinks. Exemptions in the guard
+are listed per file so a new tool touching the filesystem has to be argued for.
+
+**Workflows (`workflows/`) follow "code does what code can do".** `/commit` and `/review` (both diff-based,
+sharing `workflows/diffs.py`), `/test`, `/refactor` and `/doc` have landed. A workflow's instructions go in the *user* message,
+never the system prompt, so invoking one does not bump the cache epoch. `ChatRunner.complete` is the
+standalone one-shot call. `/review` verifies every `path:line` citation against the numbered diff the model
+was shown and lists the ones that do not check out; `/test` runs the tests **itself** through the gateway
+rather than trusting the model's claim to have run them — the project has already been bitten by that.
+
+**`/doc` builds the structure in code and lets the model write two bounded things** — an overview paragraph
+and one sentence per component. Components, the Mermaid dependency diagram, entry points, environment
+variables, the tree and the whole API reference come from the index; model text is stripped of headings
+and fences so it cannot alter the document's shape, and any `path` it invents is flagged before approval.
+Dependencies are derived from *names* (a component uses another when it references a top-level symbol only
+that component defines), because the `imports` table stores unresolved module specs and nothing ever
+populates `resolved_file_id`.
+
+**Approving a new file used to show what and not where.** `write_file`'s preview for a file that did not
+exist was only the numbered content; an edit's diff names its file in the header, a creation's did not.
+Found by a `/doc` test asserting the approval mentions the path. Now headed `--- /dev/null / +++ b/<path>`.
+
+**Batch review (§6.4) is done, and it is a pre-pass, not a second approval path.** When one model step
+proposes several writes, `ToolGateway.review_batch` previews them, asks once, and stores each answer. Every
+call then goes through `call()` exactly as before — re-prepared, re-judged by policy, re-verified,
+checkpointed, audited — and the *only* thing an answer replaces is the human's yes/no at the approval step.
+Load-bearing rules, each with a test: only calls policy would have *asked* about are shown; an answer is
+bound to the SHA-256 of the preview it was given for (a diff that moved mid-review is asked about again —
+mutation-checked); answers are consumed on use; destructive writes and same-path pairs are never batched;
+`None` from the channel is never consent; and "approve all" is absent when any item carries `DESTRUCTIVE`,
+`SECRET?` or `PARSE-ERRORS-INTRODUCED`, enforced in the bus adapter as well as the prompt. A bare Enter on
+the screen reviews file by file rather than approving everything.
+
+**The test-output parsers had no tests, and it showed.** `_parse_pytest` only read lines containing `=`,
+so it never parsed `pytest -q` — this project's own fallback test command — for a pass or a failure. It
+degraded exactly as designed (raw output instead of a one-liner), which is why nothing failed loudly.
+Fixed, along with `TestSummary.ok` no longer being true for a run in which zero tests executed. Lesson: a
+graceful fallback hides the bug that triggers it; test the parser on the shape you actually run.
+
+**Writing code with backslash escapes: use Write/Edit, not a bash heredoc.** The Bash tool here turned a backslash-n
+inside a Python string in a heredoc into a real newline several separate times, producing unterminated string
+literals that ruff and mypy caught. The Write and Edit tools preserve escapes exactly.
+
+**I3 is code-complete, and the ten-task eval scores 8/10 on `qwen3.5:4b`** (bar was 25 %; see
+[docs/benchmarks/i3-task-eval.md](docs/benchmarks/i3-task-eval.md)). It is one run, on the plain agent loop
+rather than plan mode, and a pass means the working tree is right — not that the model verified it.
+
+**Also outstanding:** (1) the **9b half** of the eval — `qwen3.5:9b` is not installed (`ollama pull`, several
+GB) — and a **plan-mode variant** of the harness, since the roadmap's target is stated "with plan mode
+enabled". (2) Repeat runs to put a spread on the 4b number. (3) I4 and Phase 3 are not started.
 
 **The GPU works, after a fix worth remembering.** Ollama's device discovery was crashing
 (`0xc0000005`) on every backend because `llama-server.exe` loaded the old system

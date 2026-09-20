@@ -248,6 +248,27 @@ def test_a_file_deleted_after_the_edit_is_a_conflict(
     assert [conflict.path for conflict in report.conflicts] == ["a.py"]
 
 
+def test_undoing_a_recorded_deletion_restores_the_file(
+    store: CheckpointStore, session: str, workspace: Path
+) -> None:
+    """A deletion checkpoint is ``after=None``, and the file being absent is the state it
+    describes — not a conflict.
+
+    Treating a missing file as a conflict unconditionally made every delete un-undoable,
+    which stayed invisible for as long as nothing recorded such a checkpoint. `delete_file`
+    and the source end of `move_file` both do, so this is the test that keeps the previous
+    test above from being read as the general rule.
+    """
+    target = workspace / "a.py"
+    assert not target.exists(), "premise: the delete already happened"
+    store.record(session_id=session, step=1, path="a.py", before=ORIGINAL, after=None)
+
+    report = store.revert_step(session, 1, workspace=workspace)
+
+    assert report.conflicts == []
+    assert target.read_bytes() == ORIGINAL
+
+
 def test_an_unchanged_file_is_not_a_conflict(store: CheckpointStore, session: str, workspace: Path) -> None:
     target = workspace / "a.py"
     target.write_bytes(EDITED)

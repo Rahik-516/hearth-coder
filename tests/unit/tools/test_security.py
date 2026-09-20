@@ -559,3 +559,152 @@ async def test_the_audit_log_cites_the_rule_that_denied(tmp_path: Path) -> None:
     record = harness.audit.read_records()[-1]
     assert record["rule_id"] == "house-rule"
     assert record["decided_by"] == "rule"
+
+
+# ---------------------------------------------- the jail, checked by grepping
+
+
+#: Names that reach the filesystem directly. Any of these in `tools/` outside
+#: `safety.paths` is a path that never met the workspace jail.
+_UNJAILED_FILESYSTEM_CALLS = (
+    "open(",
+    ".write_text(",
+    ".write_bytes(",
+    ".read_text(",
+    ".read_bytes(",
+    ".unlink(",
+    ".rmdir(",
+    ".mkdir(",
+    ".replace(",
+    "os.remove(",
+    "os.rename(",
+    "os.replace(",
+    "shutil.",
+)
+
+#: Files whose filesystem access is on paths ``_resolve``/``resolve_in_workspace`` has
+#: already jailed, or on Hearth's own directories rather than the workspace. Each is
+#: listed individually, so a *new* tool touching the filesystem fails this test and has
+#: to be argued for rather than inheriting an exemption.
+_REVIEWED = {
+    "write_fs.py",  # every path via `_resolve`; trash and temp files are Hearth's own
+    "read_fs.py",  # every path via `resolve_in_workspace`
+    "edit_engine.py",  # operates on text in memory, never on paths
+    "output.py",  # blob store, not the workspace
+    # `_python_grep`, the fallback used when ripgrep is absent. It walks the workspace
+    # with `rglob`, so each hit is checked with `is_symlink_to_outside` and
+    # `is_sensitive_read` before it is read (see test_grep_fallback_* below).
+    "search.py",
+}
+
+
+def test_no_tool_reaches_the_filesystem_outside_the_jail() -> None:
+    """CLAUDE.md's standing rule, enforced rather than asserted.
+
+    Every filesystem access in `tools/` goes through `safety.paths.resolve_in_workspace`.
+    The check is a grep because the property is syntactic: a call that takes a
+    model-supplied string and opens it is wrong no matter what it does afterwards, and no
+    runtime test reaches the one that was added last week to a tool nobody has exercised.
+
+    A new tool that needs the filesystem does not get added to `_REVIEWED` casually. It
+    gets read first, and the entry records that someone did.
+    """
+    import hearth.tools
+
+    root = Path(hearth.tools.__file__).parent
+    offenders: list[str] = []
+
+    for source in sorted(root.rglob("*.py")):
+        if source.name in _REVIEWED or "__pycache__" in source.parts:
+            continue
+        text = source.read_text(encoding="utf-8")
+        hits = sorted({call for call in _UNJAILED_FILESYSTEM_CALLS if call in text})
+        if hits:
+            offenders.append(f"{source.relative_to(root)}: {', '.join(hits)}")
+
+    assert not offenders, (
+        "filesystem access in tools/ outside the path jail:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_the_reviewed_list_names_files_that_exist() -> None:
+    """An exemption for a file that has been renamed or deleted is an exemption that
+    silently covers nothing — and the next file to take that name inherits it."""
+    import hearth.tools
+
+    root = Path(hearth.tools.__file__).parent
+    present = {source.name for source in root.rglob("*.py")}
+
+    assert present >= _REVIEWED
+
+
+# -------------------------- the grep fallback and symlinks that leave the workspace
+
+
+def _python_grep_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Force the pure-Python backend, which is the one that walks the tree itself."""
+    monkeypatch.setattr("hearth.tools.search.shutil.which", lambda _name: None)
+
+
+def _grep(workspace: Path, pattern: str):
+    from hearth.tools.search import GrepTool
+
+    tool = GrepTool()
+    args = tool.args_model.model_validate({"pattern": pattern})
+    context = ToolContext(workspace=workspace)
+    return tool.execute(args, context, tool.prepare(args, context))
+
+
+def test_grep_fallback_does_not_read_through_a_symlink_that_leaves_the_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The gap the exemption list used to record.
+
+    `rglob` reports a symlink as an ordinary file under the workspace, so without a check
+    on what the walk *found*, a link to a file outside would be read and its contents
+    returned to the model — with `is_sensitive_read` never having seen the real path.
+    """
+    _python_grep_only(monkeypatch)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("TOPSECRET-VALUE\n", encoding="utf-8")
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    (workspace / "ok.py").write_text("visible = 1\n", encoding="utf-8")
+    (workspace / "link.txt").symlink_to(outside)
+
+    leaked = _grep(workspace, "TOPSECRET")
+
+    # Asserted on the file's *value*, not the pattern: the no-match message echoes the
+    # pattern back, so a check for "TOPSECRET" would fail on a perfectly correct result.
+    assert "TOPSECRET-VALUE" not in leaked.content
+    assert "link.txt" not in leaked.content
+    assert "No matches" in leaked.content
+
+
+def test_grep_fallback_still_searches_ordinary_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard must not have turned the fallback into one that finds nothing."""
+    _python_grep_only(monkeypatch)
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    (workspace / "ok.py").write_text("visible = 1\n", encoding="utf-8")
+
+    found = _grep(workspace, "visible")
+
+    assert "ok.py" in found.content
+
+
+def test_grep_fallback_follows_a_symlink_that_stays_inside(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only links that *leave* are refused; an in-tree alias is just another name."""
+    _python_grep_only(monkeypatch)
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    (workspace / "real.py").write_text("inside = 1\n", encoding="utf-8")
+    (workspace / "alias.py").symlink_to(workspace / "real.py")
+
+    found = _grep(workspace, "inside")
+
+    assert "real.py" in found.content

@@ -1,0 +1,240 @@
+# serializer version: 1
+# name: test_prompt_snapshot[mode_plan]
+  '''
+  ## This session: plan mode
+  
+  You are working out what a change requires. **You cannot edit anything in this mode**, and
+  that is the point — the user will read your plan and correct it before any file is touched.
+  A wrong sentence here costs a moment; a wrong edit costs an undo and a re-run.
+  
+  ### Look first
+  
+  Do not plan from the question alone. Read the code the task touches: search for the symbols
+  it names, open the files that come back, and follow the callers. A plan that names a file
+  that does not exist, or a function with a different signature than you assumed, is worse
+  than no plan, because it will be approved and then fail halfway through.
+  
+  Spend your steps on looking. There is nothing else to spend them on here.
+  
+  ### What a plan is
+  
+  A short sequence of steps a competent person could carry out without asking you anything.
+  Each step names the files it touches, using paths exactly as they appear in the repository
+  — workspace-relative, no leading slash, no guesses. **The file list is used to scope
+  permissions**, so a path you invent becomes an approval prompt the user was not expecting,
+  and a path you omit becomes one they were.
+  
+  Prefer three real steps to eight speculative ones. If the change is genuinely one edit, say
+  so in one step; padding a plan to look thorough wastes the user's reading.
+  
+  ### Say what you do not know
+  
+  If the task depends on something you could not determine by reading — which of two callers
+  is the live one, whether a behaviour is intentional, what the expected output format is —
+  put it in `open_questions` rather than picking one and planning around it. An open question
+  is a plan doing its job. A confident plan built on a guess is the failure this mode exists
+  to prevent.
+  
+  Put anything that could break existing behaviour in `risks`, and name the tests that would
+  catch it in `tests`.
+  
+  ### Finishing
+  
+  Your final message must be the plan itself, as JSON matching the requested schema, and
+  nothing else — no preamble, no explanation after it. Everything you want the user to know
+  belongs in the plan's own fields.
+  '''
+# ---
+# name: test_prompt_snapshot[plan_extract]
+  '''
+  You have finished looking. Write the plan now, as JSON matching the schema, and output
+  nothing else — no explanation before it, no commentary after it.
+  
+  Base every step on what you actually read. Use file paths exactly as they appeared in the
+  tool results: workspace-relative, no leading slash. If you did not open a file, do not name
+  it in a step; say what you still need to know in `open_questions` instead.
+  '''
+# ---
+# name: test_prompt_snapshot[workflows/commit]
+  '''
+  Write a git commit message for the staged changes below.
+  
+  Output only the message: a subject line, then — only if the change needs explaining — a blank
+  line and a short body. No code fences, no quotation marks, no preamble.
+  
+  The subject:
+  
+  - is at most 72 characters and in the imperative ("Add", "Fix", "Rename"), not the past tense;
+  - says what the change *does*, not which files it touches;
+  - matches the style of the recent commits listed below when they show one.
+  
+  The body, if there is one, explains **why** — what was wrong, or what the change makes
+  possible. The diff already shows what changed; do not narrate it line by line. Wrap at 72.
+  
+  Describe only what the diff shows. If the diff does not tell you why, leave the why out
+  rather than inventing a motive.
+  
+  {{omitted}}
+  --- recent commit subjects ---
+  {{log}}
+  
+  --- staged changes ---
+  {{diff}}
+  '''
+# ---
+# name: test_prompt_snapshot[workflows/doc_architecture]
+  '''
+  Write the overview paragraph for the architecture document of a software project.
+  
+  Below are facts gathered from the project's own files. Use only these. Do not name a
+  component, technology, service or file that is not listed, and do not describe behaviour you
+  cannot see evidence of here.
+  
+  Write two to four sentences of plain prose: what the project is for, and how its components
+  fit together at the highest level. No headings, no bullet points, no code blocks — the
+  document around your paragraph supplies all structure.
+  
+  Project: {{name}}
+  Description from its manifest: {{description}}
+  
+  Components:
+  {{components}}
+  
+  Entry points:
+  {{entry_points}}
+  '''
+# ---
+# name: test_prompt_snapshot[workflows/doc_component]
+  '''
+  In one sentence of at most 25 words, say what the `{{component}}` component of the
+  `{{project}}` project is responsible for.
+  
+  Use only the files and symbols listed below. Do not guess at responsibilities they do not
+  show. Reply with the sentence alone — no bullet, no quotation marks, no preamble.
+  
+  Files:
+  {{files}}
+  
+  Top-level symbols:
+  {{symbols}}
+  '''
+# ---
+# name: test_prompt_snapshot[workflows/doc_readme]
+  '''
+  Write the overview section of a README for a software project.
+  
+  Below are facts gathered from the project's own files. Use only these. Do not invent features,
+  installation steps, badges or links, and do not name anything that is not listed.
+  
+  Write two to four sentences of plain prose for someone deciding whether this project is
+  relevant to them: what it is and what it does. No headings, no bullet points, no code blocks —
+  the README around your paragraph supplies all structure, including usage and tests.
+  
+  Project: {{name}}
+  Description from its manifest: {{description}}
+  
+  Components:
+  {{components}}
+  
+  Entry points:
+  {{entry_points}}
+  '''
+# ---
+# name: test_prompt_snapshot[workflows/review]
+  '''
+  Review the changes below as a careful colleague would. You are looking for problems the
+  author would want to know about before merging: bugs, missed edge cases, broken callers,
+  missing tests, security mistakes, and anything that will surprise the next reader.
+  
+  Each line of the diff is shown with its line number in the **new** version of the file, then
+  `+` for an added line, `-` for a removed one, or a space for unchanged context. Removed lines
+  have no number.
+  
+  ### Rules
+  
+  - **Cite every finding as `path:line`**, copying the path from the `===` header and the line
+    number from the left margin. A finding without a citation cannot be acted on. Do not
+    compute line numbers; copy them.
+  - Cite only lines you were shown. If a concern is about code outside the diff, say so and
+    do not invent a location for it.
+  - Report what is wrong, in order of how much it matters. Do not praise, summarise the
+    change, or restate the diff.
+  - Distinguish what you can see from what you suspect. "This divides by `count`, which is
+    zero when the list is empty (`a.py:41`)" is a finding. "This might have performance
+    issues" is not, unless you can say where and why.
+  - If you find nothing that matters, say so in one sentence. An empty review is a valid
+    review; padding it with style nits is not.
+  
+  Format each finding as:
+  
+      **<short title>** — `path:line`
+      What is wrong and why it matters, in one or two sentences.
+  
+  {{omitted}}
+  --- changes ---
+  {{diff}}
+  '''
+# ---
+# name: test_prompt_snapshot[workflows/test]
+  '''
+  Write tests for {{target}}.
+  
+  ### Where and how
+  
+  - Write the tests to `{{test_path}}`, using the `{{framework}}` conventions of this project.
+  - Notes about that location:
+  {{notes}}
+  
+  {{sample}}
+  
+  ### What to do
+  
+  1. Read `{{source_path}}` first. Test what the code *does*, which you can only know by reading
+     it — not what its name suggests.
+  2. Write the test file with `write_file` (or `edit_file` if it already exists). Cover the normal
+     case, the edges the code visibly handles (empty input, zero, boundaries) and the failures it
+     raises or returns.
+  3. Stop. **Do not run the tests yourself.** They are run for you after you finish, and if any
+     fail you will be shown exactly which and why.
+  
+  ### Rules
+  
+  - **Do not edit `{{source_path}}` or any other non-test file.** Your task is to test the code as
+    it is. If a test you believe is correct fails because the code looks wrong, say so in your
+    final message instead of changing the code.
+  - Assert on behaviour, not on implementation. A test that mirrors the code line for line proves
+    nothing and breaks on every refactor.
+  - Tests must be deterministic and offline: no network, no reliance on the current time or on
+    ordering, no files outside a temporary directory.
+  - Follow the sample's imports and naming. Do not add dependencies.
+  - Keep it proportionate. A handful of meaningful tests beats thirty near-duplicates.
+  
+  Finish with two or three sentences: which test file you wrote and what it covers.
+  '''
+# ---
+# name: test_prompt_snapshot[workflows/test_fix]
+  '''
+  The tests in {{files}} were run, and they did not pass. This is fix round {{iteration}} of
+  {{max}}.
+  
+  Result of the run:
+  
+  ```
+  {{summary}}
+  ```
+  
+  Read the failing test and the code it exercises, decide which of the two is wrong, and fix
+  it.
+  
+  - If **the test** is wrong — a bad expectation, a missing import, a misreading of the code —
+    fix the test.
+  - If **the code** looks wrong, do **not** edit it. Change the test only if you are sure the
+    expectation was mistaken; otherwise leave the failing test as it is and say in your final
+    message that the code appears to have a bug, and where. A test that has been bent to pass
+    against a bug is worse than a failing one.
+  - Do not delete or skip a failing test to make the run pass.
+  
+  Do not run the tests yourself; they are run again after you finish. End with one or two
+  sentences on what you changed and why.
+  '''
+# ---

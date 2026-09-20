@@ -34,18 +34,22 @@ from pathlib import Path
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
 
 from hearth.cli.diff_view import render_approval, render_diff, render_options
 from hearth.core.bus import EventBus
-from hearth.core.events import ApprovalDecision, ApprovalRequested, ApprovalResponse
+from hearth.core.events import (
+    ApprovalDecision,
+    ApprovalRequested,
+    ApprovalResponse,
+)
+from hearth.tools.channel import BATCH_BLOCKING_BADGES
 
 #: Badges that withdraw the "always for this session" offer even if a key was issued
 #: (docs/safety-and-tool-use.md §6.1). Mirrors the engine's own list, as defence in depth:
 #: if the two ever disagree, the UI must be the stricter one.
 UNGRANTABLE_BADGES = frozenset({"DESTRUCTIVE", "SHELL", "NETWORK?", "WIN-INTEROP", "INLINE-CODE"})
 
-#: Badges that block "approve all" in a batch review (§6.4).
-BATCH_BLOCKING_BADGES = ("DESTRUCTIVE", "SECRET?", "PARSE-ERRORS-INTRODUCED")
 
 #: A pseudo-decision: `d` shows the full diff and returns to the prompt.
 SHOW_DIFF = "show_diff"
@@ -84,6 +88,20 @@ def choices_for(request: ApprovalRequested) -> tuple[Choice, ...]:
             Choice("e", "edit", "[e] edit"),
             Choice("n", "reject", "[n] reject + feedback"),
             Choice("d", SHOW_DIFF, "[d] full diff"),
+            Choice("q", "abort", "[q] abort task"),
+        ]
+    )
+    return tuple(choices)
+
+
+def _batch_choices(blockers: list[str]) -> tuple[Choice, ...]:
+    """The whole-batch answers. Approve-all is left out entirely when a blocker is present."""
+    choices = [Choice("i", "individual", "[i] review one by one", default=True)]
+    if not blockers:
+        choices.append(Choice("a", "approve", "[a] approve all"))
+    choices.extend(
+        [
+            Choice("n", "reject", "[n] reject all + feedback"),
             Choice("q", "abort", "[q] abort task"),
         ]
     )
@@ -139,8 +157,112 @@ class ApprovalPrompt:
         if not isinstance(event, ApprovalRequested):
             return
 
-        response = await self._decide(event)
+        response = await (self._decide_batch(event) if event.items else self._decide(event))
         self._bus.resolve_approval(response)
+
+    # ------------------------------------------------------------ batch review
+
+    async def _decide_batch(self, request: ApprovalRequested) -> ApprovalResponse:
+        """One screen for several writes (docs/safety-and-tool-use.md §6.4).
+
+        A bare Enter goes through the files **one by one**, not to "approve all". A batch
+        is exactly where approval fatigue is worst — the whole point is to make many
+        changes cheap to answer — so the reflex keypress has to land on the careful path,
+        and approving everything at once is a letter the person chooses deliberately.
+        """
+        blockers = [badge for badge in BATCH_BLOCKING_BADGES if badge in request.badges]
+        self._render_batch(request, blockers)
+
+        choices = _batch_choices(blockers)
+        self._console.print(render_options([choice.label for choice in choices]))
+
+        while True:
+            answer = (await self._ask("choice [i]: ")).strip().lower()
+
+            if answer.isdigit() and 1 <= int(answer) <= len(request.items):
+                item = request.items[int(answer) - 1]
+                self._console.print(render_diff(item.preview, limit=100_000))
+                continue
+
+            if answer == "a" and blockers:
+                # Not offered, and not honoured when typed anyway.
+                self._console.print(
+                    f"[yellow]approve-all is unavailable: {', '.join(blockers)}. "
+                    "Review the files one by one.[/yellow]"
+                )
+                continue
+
+            choice = interpret(answer, choices)
+            if choice is None:
+                self._console.print("[dim]unrecognised — pick one of the options above[/dim]")
+                continue
+
+            if choice.decision == "individual":
+                return await self._decide_each(request)
+            if choice.decision == "reject":
+                feedback = (await self._ask("why? (optional, sent to the model): ")).strip()
+                return _reply(request, "reject", feedback=feedback or None)
+            return _reply(request, choice.decision)
+
+    async def _decide_each(self, request: ApprovalRequested) -> ApprovalResponse:
+        """Walk the files in proposal order, asking about each."""
+        decisions: dict[str, ApprovalDecision] = {}
+
+        for number, item in enumerate(request.items, start=1):
+            self._console.print()
+            self._console.print(f"[dim]file {number} of {len(request.items)}[/dim]")
+            self._console.print(
+                render_approval(
+                    tool=item.tool,
+                    risk=request.risk,
+                    preview=item.preview,
+                    badges=list(item.badges),
+                    reasons=[],
+                )
+            )
+            alarming = bool(set(item.badges) & set(BATCH_BLOCKING_BADGES))
+            choices = (
+                Choice("y", "approve", "[y] approve", default=not alarming),
+                Choice("n", "reject", "[n] reject"),
+                Choice("d", SHOW_DIFF, "[d] full diff"),
+                Choice("q", "abort", "[q] abort task"),
+            )
+            self._console.print(render_options([choice.label for choice in choices]))
+
+            while True:
+                answer = await self._ask("choice [y]: " if not alarming else "choice (no default): ")
+                choice = interpret(answer, choices)
+                if choice is None:
+                    self._console.print("[dim]unrecognised — pick one of the options above[/dim]")
+                    continue
+                if choice.decision == SHOW_DIFF:
+                    self._console.print(render_diff(item.preview, limit=100_000))
+                    continue
+                break
+
+            if choice.decision == "abort":
+                return _reply(request, "abort")
+            decisions[item.call_id] = choice.decision  # type: ignore[assignment]
+
+        # Anything not explicitly approved is rejected by the receiving side, so the
+        # top-level decision is only a summary for a frontend that ignores item_decisions.
+        summary: ApprovalDecision = "approve" if all(d == "approve" for d in decisions.values()) else "reject"
+        return ApprovalResponse(
+            request_id=request.request_id, decision=summary, item_decisions=decisions
+        )
+
+    def _render_batch(self, request: ApprovalRequested, blockers: list[str]) -> None:
+        self._console.print()
+        self._console.print(f"[bold]{len(request.items)} file changes proposed in one step[/bold]")
+        for number, item in enumerate(request.items, start=1):
+            stats = f"+{item.added} -{item.removed}"
+            flags = f"  [red]{' '.join(item.badges)}[/red]" if item.badges else ""
+            where = item.path or item.summary
+            self._console.print(f"  {number}. {escape(where)}  [dim]{stats}[/dim]{flags}", markup=True)
+        if blockers:
+            self._console.print(
+                f"[yellow]approve-all is unavailable: {', '.join(blockers)}[/yellow]"
+            )
 
     # ----------------------------------------------------------- internals
 

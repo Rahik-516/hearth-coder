@@ -41,11 +41,12 @@ from hearth.core.events import (
     TurnStarted,
 )
 from hearth.core.limits import TurnLimits
+from hearth.core.plan import Plan, PlanError, parse_plan, plan_schema
 from hearth.core.session import Session
 from hearth.llm.errors import LLMError
 from hearth.llm.provider import LLMProvider
 from hearth.llm.types import ChatRequest, Message, Sampling, ThinkLevel
-from hearth.prompts import system_prompt_for
+from hearth.prompts import load, system_prompt_for
 from hearth.retrieval.engine import RetrievalEngine, RetrievalResult
 from hearth.retrieval.repomap import RepoMapBuilder
 from hearth.tools.gateway import ToolGateway
@@ -105,6 +106,31 @@ class AgentTurnResult:
             f"duration={self.duration_ms / 1000:.1f}s",
         ]
         return f"run_result: {' '.join(parts)}"
+
+
+@dataclass
+class PlanTurnResult:
+    """What one `/plan` turn produced.
+
+    ``plan`` and ``error`` are exclusive: exactly one is set. There is no third state where
+    a caller gets a plan *and* a warning, because `/execute` would have to decide what to
+    do with that, and the only safe answer is the one this shape enforces — no plan, no
+    execution.
+    """
+
+    plan: Plan | None
+    error: str = ""
+    #: The model's unparsed response, kept only when parsing failed. It is what the user
+    #: needs to see to judge whether the model was close or nowhere near.
+    raw: str = ""
+    reason: str = "answered"
+    steps: int = 0
+    tool_calls: int = 0
+    duration_ms: float = 0.0
+
+    @property
+    def ok(self) -> bool:
+        return self.plan is not None
 
 
 @dataclass
@@ -293,6 +319,140 @@ class ChatRunner:
             duration_ms=duration,
         )
 
+    async def run_plan_turn(
+        self,
+        session: Session,
+        task: str,
+        *,
+        gateway: ToolGateway,
+        tool_schemas: list[dict[str, Any]],
+        limits: TurnLimits | None = None,
+        think: ThinkLevel = "off",
+    ) -> PlanTurnResult:
+        """Investigate a task with read-only tools, then return a structured plan.
+
+        Two phases, and the split is the whole design (docs/system-design.md §8.3).
+
+        The **exploration** phase is an ordinary agent loop over the read-only tools plan
+        mode exposes. Nothing structured is asked for yet, because a model made to fill in
+        a schema while it is still searching fills it in from the question rather than from
+        the code — the schema pulls it towards answering early, which is exactly what plan
+        mode exists to prevent.
+
+        The **extraction** phase then asks for the plan as JSON, with ``format`` set and no
+        tools available. It reuses the exploration transcript verbatim, so the plan is
+        written from what was actually read.
+
+        A model that returns something unusable fails here rather than silently producing
+        an empty plan: `/execute` would accept that and run a zero-step task that looks
+        like a success. The error is written for the user, because this surfaces at a
+        `/plan` prompt where a person, not a retry loop, decides what happens next.
+        """
+        started = time.perf_counter()
+        await self._bus.publish(
+            TurnStarted(session_id=session.id, mode=session.mode.value, model=session.model)
+        )
+
+        loop = AgentLoop(
+            provider=self._provider,
+            gateway=gateway,
+            bus=self._bus,
+            limits=limits,
+            tool_schemas=tool_schemas,
+        )
+
+        try:
+            await self.maybe_compact(session)
+            retrieval = await self._retrieve(session, task)
+            built = self._build(session, task, retrieval)
+            base = ChatRequest(
+                model=session.model,
+                messages=built.messages,
+                num_ctx=session.num_ctx,
+                think=think,
+            )
+            outcome = await loop.run(base_request=base, on_text=self._emit_text)
+            raw = await self._extract_plan(base, outcome)
+        except asyncio.CancelledError:
+            await self._bus.publish(TurnFinished(session_id=session.id, reason="aborted", steps=1))
+            raise
+        except LLMError as exc:
+            await self._bus.publish(ErrorEvent(message=str(exc)))
+            await self._bus.publish(TurnFinished(session_id=session.id, reason="error", steps=1))
+            return PlanTurnResult(
+                plan=None, error=str(exc), reason="error", duration_ms=_ms_since(started)
+            )
+
+        duration = _ms_since(started)
+        try:
+            plan = parse_plan(raw)
+        except PlanError as exc:
+            await self._bus.publish(
+                TurnFinished(session_id=session.id, reason="error", steps=outcome.steps)
+            )
+            return PlanTurnResult(
+                plan=None,
+                error=str(exc),
+                raw=raw,
+                reason="error",
+                steps=outcome.steps,
+                tool_calls=outcome.tool_calls,
+                duration_ms=duration,
+            )
+
+        # The exploration prose is deliberately not added to the history: the plan itself
+        # is the artefact, and `/execute` pins it. Keeping both would put two descriptions
+        # of the same intent in the window, which is how a model ends up following the
+        # draft it wrote before it had read anything.
+        session.add_user(task)
+        session.add_assistant(plan.render())
+
+        await self._bus.publish(
+            TurnFinished(
+                session_id=session.id,
+                reason=_turn_reason(outcome.reason),
+                steps=outcome.steps,
+                duration_ms=duration,
+            )
+        )
+        return PlanTurnResult(
+            plan=plan,
+            raw=raw,
+            reason=_agent_reason(outcome.reason),
+            steps=outcome.steps,
+            tool_calls=outcome.tool_calls,
+            duration_ms=duration,
+        )
+
+    async def _extract_plan(self, base: ChatRequest, outcome: Any) -> str:
+        """Ask for the plan as JSON, from the transcript the exploration produced.
+
+        ``tools`` is emptied: the model has finished looking, and a tool call here would
+        come back as a call rather than a plan and cost a whole round trip to discover.
+        ``temperature=0`` for the same reason the compactor uses it — this step is a
+        transcription of a decision already made, not a creative one.
+        """
+        messages = [*outcome.messages]
+        if outcome.answer:
+            messages.append(Message(role="assistant", content=outcome.answer))
+        messages.append(Message(role="user", content=load("plan_extract")))
+
+        request = base.model_copy(
+            update={
+                "messages": messages,
+                "tools": [],
+                "format": plan_schema(),
+                "think": "off",
+                "sampling": Sampling(temperature=0.0),
+            }
+        )
+
+        parts: list[str] = []
+        async for chunk in self._provider.chat_stream(request):
+            if chunk.content_delta:
+                parts.append(chunk.content_delta)
+        return "".join(parts)
+
     async def _emit_text(self, delta: str) -> None:
         await self._bus.publish(TextDelta(text=delta))
 
@@ -398,14 +558,28 @@ class ChatRunner:
 
         return result
 
-    async def _summarize(self, session: Session, prompt: str) -> str:
-        """Ask the model for the summary. The only place compaction touches the LLM."""
+    async def complete(
+        self, session: Session, prompt: str, *, num_predict: int | None = None
+    ) -> str:
+        """One standalone completion: no history, no retrieval, no tools, temperature 0.
+
+        For the jobs that are a transformation of text already in hand — a summary, a
+        commit message, a review of a diff — where the session's own conversation would
+        only be noise, and where prefix-cache reuse is beside the point because nothing
+        here shares a prefix with anything. It is also why these calls do not touch the
+        session: they add nothing to the history and do not bump the cache epoch.
+
+        Raises:
+            LLMError: passed through. The caller knows what the text was for, so the
+                caller decides what a failure means to the user.
+        """
         request = ChatRequest(
             model=session.model,
             messages=[Message(role="user", content=prompt)],
             num_ctx=session.num_ctx,
             think="off",
             sampling=Sampling(temperature=0.0),
+            num_predict=num_predict,
         )
 
         parts: list[str] = []
@@ -413,6 +587,10 @@ class ChatRunner:
             if chunk.content_delta:
                 parts.append(chunk.content_delta)
         return "".join(parts)
+
+    async def _summarize(self, session: Session, prompt: str) -> str:
+        """Ask the model for the summary. The only place compaction touches the LLM."""
+        return await self.complete(session, prompt)
 
     def _fixed_overhead(self, session: Session) -> int:
         """Tokens compaction cannot reclaim: the system prompt and the repo map."""

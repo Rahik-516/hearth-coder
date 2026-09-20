@@ -63,7 +63,9 @@ def build(
     checkpoints: CheckpointStore,
     **flags: bool,
 ):
-    return _build_gateway(
+    # The grant set comes back too, but these tests are about what policy decides with an
+    # empty one: a grant added here would be the test answering its own question.
+    gateway, _grants = _build_gateway(
         workspace,
         LoadedConfig(config=HearthConfig()),
         session=session,
@@ -76,6 +78,7 @@ def build(
         allow_tests=flags.get("allow_tests", False),
         allow_commit=flags.get("allow_commit", False),
     )
+    return gateway
 
 
 async def test_headless_denies_an_edit_and_names_the_flag(
@@ -157,7 +160,7 @@ async def test_interactive_mode_asks_rather_than_denying(
     the policy engine never asking.
     """
     bus = EventBus()
-    gateway = _build_gateway(
+    gateway, _grants = _build_gateway(
         workspace,
         LoadedConfig(config=HearthConfig()),
         session=session,

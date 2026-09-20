@@ -23,19 +23,32 @@ a filesystem — see ``safety/policy.py``.
 
 from __future__ import annotations
 
+import hashlib
 import inspect
+import logging
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from hearth.safety.audit import AuditLog, AuditRecord
 from hearth.safety.errors import PathError
 from hearth.safety.invariants import privilege_escalation_dirs
 from hearth.safety.policy import ConfigView, Decision, PolicyRequest, SessionView, evaluate
+from hearth.safety.risk import Risk
 from hearth.tools.base import Prepared, Tool, ToolContext
-from hearth.tools.channel import ApprovalAsk, ApprovalReply, NullChannel, ToolChannel
-from hearth.tools.registry import ToolRegistry
+from hearth.tools.channel import (
+    ApprovalAsk,
+    ApprovalReply,
+    BatchChannel,
+    BatchItem,
+    NullChannel,
+    ToolChannel,
+)
+from hearth.tools.registry import ToolAvailability, ToolRegistry
 from hearth.tools.results import ErrorCode, ToolResult, unknown_tool
+
+logger = logging.getLogger(__name__)
 
 #: Decides one prepared call. A closure rather than a bound object, so ``core`` can supply
 #: a *live* session view — a grant added mid-turn has to be visible to the next call.
@@ -68,6 +81,22 @@ def default_policy() -> PolicyFn:
     )
 
 
+@dataclass(frozen=True)
+class _BatchAnswer:
+    """A batch decision, bound to the exact preview the user saw when giving it."""
+
+    decision: str  # approve | reject
+    preview_hash: str
+
+
+def _preview_hash(preview: str) -> str:
+    return hashlib.sha256(preview.encode("utf-8")).hexdigest()
+
+
+def _as_int(value: object) -> int:
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
 class ToolGateway:
     """Runs tool calls through the full lifecycle."""
 
@@ -89,6 +118,26 @@ class ToolGateway:
         self._policy = policy or default_policy()
         self._on_grant = on_grant
         self._session_id = session_id
+        #: call_id -> the user's answer from a batch review, awaiting its call.
+        self._batch: dict[str, _BatchAnswer] = {}
+
+    def availability(
+        self,
+        mode: str,
+        *,
+        tool_reliability: str = "high",
+        max_tools: int | None = None,
+    ) -> ToolAvailability:
+        """Which tools a mode exposes.
+
+        Asked of the gateway rather than of a separately-held registry, so the schemas the
+        model is shown and the tools this gateway will accept are one selection rather than
+        two that agree. A frontend that switches mode — `/mode agent`, or `/plan` dropping
+        into read-only tools — has to re-ask, and this is where it asks.
+        """
+        return self._registry.for_mode(
+            mode, tool_reliability=tool_reliability, max_tools=max_tools
+        )
 
     async def call(
         self,
@@ -182,9 +231,11 @@ class ToolGateway:
 
         # --- approve ------------------------------------------------------
         if decision.action == "ask":
-            approved = await self._request_approval(
-                tool=tool, prepared=prepared, decision=decision, call_id=call_id
-            )
+            approved = self._batch_answer(call_id, prepared)
+            if approved is None:
+                approved = await self._request_approval(
+                    tool=tool, prepared=prepared, decision=decision, call_id=call_id
+                )
             if approved is None or approved.decision in ("reject", "abort"):
                 feedback = (approved.feedback if approved else None) or "no reason given"
                 result = ToolResult.failure(ErrorCode.REJECTED, f"REJECTED by user: {feedback}")
@@ -247,6 +298,120 @@ class ToolGateway:
             rule_id=decision.rule_id,
         )
         return result
+
+    # ------------------------------------------------------------ batch review
+
+    async def review_batch(self, calls: list[tuple[str, dict[str, Any], str]]) -> int:
+        """One review screen for the writes in a step (docs/safety-and-tool-use.md §6.4).
+
+        A **pre-pass**: it previews each call, asks once, and remembers the answers. It
+        executes nothing and decides nothing about policy. Every call then goes through
+        :meth:`call` exactly as before — validated, prepared again, judged by policy again,
+        re-verified at execution, checkpointed, audited — and the only thing a batch answer
+        replaces is the *human's yes or no* at the approval step.
+
+        Three rules keep that substitution honest:
+
+        * **Only calls policy would have asked about are shown.** Denied calls are refused
+          as usual and never reach a screen; allowed calls (a rule, a grant) run without one.
+        * **An answer binds to the preview it was given for** (:class:`_BatchAnswer`). If
+          the diff has moved by the time the call runs, the answer is discarded and the user
+          is asked about what is now true.
+        * **Some calls are never batched**: destructive ones, which need their typed
+          confirmation (§6.3), and any pair of writes to the same path, because the second
+          diff depends on the first having been applied and so cannot be shown correctly in
+          advance.
+
+        Returns how many items were put to the user; 0 when nothing was batched.
+        """
+        self._batch.clear()
+
+        channel = self._channel
+        if not isinstance(channel, BatchChannel):
+            return 0
+
+        items, hashes = self._batchable(calls)
+        if len(items) < 2:
+            return 0
+
+        answers = await channel.request_batch_approval(items)
+        if answers is None:
+            # No answer could be obtained. Nothing is stored, so each call asks for itself
+            # (and fails closed if there is still nobody to ask).
+            return len(items)
+
+        for item in items:
+            decision = "approve" if answers.get(item.call_id) == "approve" else "reject"
+            self._batch[item.call_id] = _BatchAnswer(decision, hashes[item.call_id])
+        return len(items)
+
+    def _batchable(
+        self, calls: list[tuple[str, dict[str, Any], str]]
+    ) -> tuple[list[BatchItem], dict[str, str]]:
+        """Preview each call and keep those that may share a review screen."""
+        candidates: list[tuple[BatchItem, str]] = []
+
+        for name, arguments, call_id in calls:
+            tool = self._registry.get(name)
+            if tool is None or tool.risk is not Risk.WRITE:
+                continue
+            parsed = tool.validate(arguments)
+            if isinstance(parsed, ToolResult):
+                continue
+            try:
+                prepared = tool.prepare(parsed, self._context)
+            except Exception as exc:
+                # Including PathError: the real call will hit the same refusal and audit
+                # it properly. A preview pass is not the place to record or report it,
+                # but the reason is kept for whoever is debugging why a call was not batched.
+                logger.debug("batch preview skipped %s: %s", name, exc)
+                continue
+            if prepared.failed:
+                continue
+
+            decision = self._policy(PolicyRequest(tool=name, risk=tool.risk, facts=prepared.facts))
+            if decision.action != "ask":
+                continue
+            if prepared.facts.destructive or "DESTRUCTIVE" in (*decision.badges, *prepared.badges):
+                continue
+
+            shown = prepared.preview or prepared.summary
+            candidates.append(
+                (
+                    BatchItem(
+                        call_id=call_id,
+                        tool=name,
+                        path=prepared.facts.path,
+                        summary=prepared.summary,
+                        preview=shown,
+                        badges=tuple(dict.fromkeys([*decision.badges, *prepared.badges])),
+                        added=_as_int(prepared.payload.get("added")),
+                        removed=_as_int(prepared.payload.get("removed")),
+                    ),
+                    _preview_hash(shown),
+                )
+            )
+
+        paths = [item.path for item, _ in candidates if item.path is not None]
+        repeated = {path for path in paths if paths.count(path) > 1}
+        kept = [(item, digest) for item, digest in candidates if item.path not in repeated]
+        return [item for item, _ in kept], {item.call_id: digest for item, digest in kept}
+
+    def _batch_answer(self, call_id: str, prepared: Prepared) -> ApprovalReply | None:
+        """The stored batch answer for this call, if there is one that still applies.
+
+        Consumed on use, so an answer can never be replayed against a second call with the
+        same id. ``None`` means "ask the user", which is also what happens when the preview
+        no longer matches what was reviewed.
+        """
+        answer = self._batch.pop(call_id, None)
+        if answer is None:
+            return None
+        if answer.preview_hash != _preview_hash(prepared.preview or prepared.summary):
+            return None
+        if answer.decision == "approve":
+            return ApprovalReply(decision="approve")
+        return ApprovalReply(decision="reject", feedback="rejected in batch review")
 
     # -------------------------------------------------------------- internals
 
