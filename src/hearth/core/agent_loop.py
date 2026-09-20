@@ -226,6 +226,14 @@ class AgentLoop:
         if all_concurrent and len(calls) > 1:
             results = await asyncio.gather(*(invoke(call) for call in calls))
         else:
+            if len(calls) > 1:
+                # Several writes in one step: put them to the user on one screen rather
+                # than as a run of separate prompts (docs/safety-and-tool-use.md §6.4).
+                # A pre-pass only — each call still goes through the gateway in proposal
+                # order, and the gateway decides what, if anything, the answers replace.
+                await self._gateway.review_batch(
+                    [(call.name, call.arguments, call.call_id) for call in calls]
+                )
             results = [await invoke(call) for call in calls]
 
         for result in results:

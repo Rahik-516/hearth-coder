@@ -7,17 +7,24 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from hearth.core.bus import BusClosedError, EventBus
 from hearth.core.events import (
     ApprovalDecision,
     ApprovalRequested,
+    BatchItemView,
     ToolCallProposed,
     ToolFinished,
     ToolStarted,
 )
-from hearth.tools.channel import ApprovalAsk, ApprovalReply
+from hearth.tools.channel import (
+    ApprovalAsk,
+    ApprovalReply,
+    BatchItem,
+    batch_blockers,
+)
 
 
 class EventBusChannel:
@@ -80,6 +87,62 @@ class EventBusChannel:
             edited_arguments=response.edited_arguments,
             feedback=response.feedback,
         )
+
+
+    async def request_batch_approval(self, items: list[BatchItem]) -> dict[str, str] | None:
+        """One review screen for several writes (docs/safety-and-tool-use.md §6.4).
+
+        The answer is validated here, not only by the frontend that produced it. A
+        whole-batch "approve" is honoured only when no item carries a blocking badge; a
+        frontend that offered it anyway — a bug, or one written before batches existed —
+        gets the safe reading, which is a rejection of everything. "Approve all is
+        disabled" is a property of the system rather than of one prompt's rendering.
+        """
+        blockers = batch_blockers([item.badges for item in items])
+        options: list[ApprovalDecision] = ["reject", "abort"] if blockers else ["approve", "reject", "abort"]
+
+        request = ApprovalRequested(
+            request_id=f"batch-{uuid.uuid4().hex[:10]}",
+            call_id=items[0].call_id,
+            tool="batch_review",
+            risk="WRITE",
+            preview=f"{len(items)} file change(s) proposed in one step",
+            badges=sorted({badge for item in items for badge in item.badges}),
+            reasons=[f"approve-all is unavailable: {', '.join(blockers)}"] if blockers else [],
+            options=options,
+            items=[
+                BatchItemView(
+                    call_id=item.call_id,
+                    tool=item.tool,
+                    path=item.path,
+                    summary=item.summary,
+                    preview=item.preview,
+                    badges=list(item.badges),
+                    added=item.added,
+                    removed=item.removed,
+                )
+                for item in items
+            ],
+        )
+
+        try:
+            response = await self._bus.request_approval(request)
+        except BusClosedError:
+            return None
+
+        offered = {item.call_id for item in items}
+        if response.item_decisions is not None:
+            # Only ids that were offered, and only an explicit approve counts. An unknown
+            # id is ignored rather than trusted, and a missing one is a rejection.
+            return {
+                call_id: ("approve" if decision in ("approve", "always_session") else "reject")
+                for call_id, decision in response.item_decisions.items()
+                if call_id in offered
+            }
+
+        if response.decision == "approve" and not blockers:
+            return dict.fromkeys(offered, "approve")
+        return dict.fromkeys(offered, "reject")
 
 
 def _options_for(ask: ApprovalAsk) -> list[ApprovalDecision]:

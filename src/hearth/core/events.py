@@ -97,12 +97,33 @@ class ToolCallProposed(_Envelope):
     arguments: dict[str, Any] = Field(default_factory=dict)
 
 
+class BatchItemView(BaseModel):
+    """One write within a batch review (docs/safety-and-tool-use.md §6.4)."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    call_id: str
+    tool: str
+    path: str | None = None
+    summary: str
+    preview: str
+    badges: list[str] = Field(default_factory=list)
+    added: int = 0
+    removed: int = 0
+
+
 class ApprovalRequested(_Envelope):
     """**Blocks the tool call until an ``ApprovalResponse`` arrives.**
 
     ``request_id`` correlates the response. ``badges`` carry the risk signals that make
     unusual operations visually distinct, so routine ones can be approved quickly and
     attention goes where it matters (docs/safety-and-tool-use.md §6.2).
+
+    A **batch review** is the same event with ``items`` filled in: one screen for several
+    writes proposed in a single step (§6.4). It reuses this event rather than adding a
+    second one so that a frontend that has never heard of batches still degrades safely —
+    it sees an approval whose ``options`` omit ``approve`` whenever any item carries a
+    blocking badge, so the only whole-batch answers it can give are ones that are safe.
     """
 
     type: Literal["approval_requested"] = "approval_requested"
@@ -118,6 +139,8 @@ class ApprovalRequested(_Envelope):
     #: When set, approving requires the user to type this word first.
     typed_confirmation: str | None = None
     grant_key: str | None = None
+    #: Non-empty for a batch review; each item is decided separately.
+    items: list[BatchItemView] = Field(default_factory=list)
 
 
 class ToolStarted(_Envelope):
@@ -222,6 +245,9 @@ class ApprovalResponse(_Envelope):
     decision: ApprovalDecision
     edited_arguments: dict[str, Any] | None = None
     feedback: str | None = None
+    #: For a batch review: the answer for each item, by ``call_id``. An item left out is
+    #: rejected — absence never approves.
+    item_decisions: dict[str, ApprovalDecision] | None = None
 
 
 class Cancel(_Envelope):

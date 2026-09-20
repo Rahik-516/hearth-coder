@@ -18,7 +18,7 @@ session state in through the channel.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 
 @dataclass(frozen=True)
@@ -80,6 +80,50 @@ class ToolChannel(Protocol):
         headless run. Callers must treat that as a denial, never as consent
         (docs/safety-and-tool-use.md §1.3).
         """
+        ...
+
+
+#: Badges that disable "approve all" in a batch review (§6.4). One item carrying any of them
+#: is enough. Defined here, beside the batch types, so that the terminal prompt, the bus
+#: adapter and the gateway all read one list: "approve all is disabled" is only a guarantee
+#: if every layer that could grant it agrees on when.
+BATCH_BLOCKING_BADGES = ("DESTRUCTIVE", "SECRET?", "PARSE-ERRORS-INTRODUCED")
+
+
+def batch_blockers(badge_groups: list[tuple[str, ...]] | list[list[str]]) -> list[str]:
+    """The blocking badges present across a batch, in a stable order."""
+    present = {badge for group in badge_groups for badge in group}
+    return [badge for badge in BATCH_BLOCKING_BADGES if badge in present]
+
+
+@dataclass(frozen=True)
+class BatchItem:
+    """One write offered for batch review: what would happen, and how to recognise it."""
+
+    call_id: str
+    tool: str
+    path: str | None
+    summary: str
+    preview: str
+    badges: tuple[str, ...] = ()
+    added: int = 0
+    removed: int = 0
+
+
+@runtime_checkable
+class BatchChannel(Protocol):
+    """An optional channel capability: decide several writes on one screen (§6.4).
+
+    Separate from :class:`ToolChannel` on purpose. A channel that does not implement it —
+    the null channel, a headless run, a frontend that predates batches — simply gets no
+    batching, and every write is asked about individually as before. Making it part of the
+    base protocol would force every implementation to answer a question it may have no way
+    to ask.
+    """
+
+    async def request_batch_approval(self, items: list[BatchItem]) -> dict[str, str] | None:
+        """Decide each item. Returns ``call_id -> "approve" | "reject"``, or ``None`` when no
+        answer could be obtained. An item missing from the answer is a rejection."""
         ...
 
 

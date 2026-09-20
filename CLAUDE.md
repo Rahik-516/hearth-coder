@@ -123,6 +123,17 @@ populates `resolved_file_id`.
 exist was only the numbered content; an edit's diff names its file in the header, a creation's did not.
 Found by a `/doc` test asserting the approval mentions the path. Now headed `--- /dev/null / +++ b/<path>`.
 
+**Batch review (§6.4) is done, and it is a pre-pass, not a second approval path.** When one model step
+proposes several writes, `ToolGateway.review_batch` previews them, asks once, and stores each answer. Every
+call then goes through `call()` exactly as before — re-prepared, re-judged by policy, re-verified,
+checkpointed, audited — and the *only* thing an answer replaces is the human's yes/no at the approval step.
+Load-bearing rules, each with a test: only calls policy would have *asked* about are shown; an answer is
+bound to the SHA-256 of the preview it was given for (a diff that moved mid-review is asked about again —
+mutation-checked); answers are consumed on use; destructive writes and same-path pairs are never batched;
+`None` from the channel is never consent; and "approve all" is absent when any item carries `DESTRUCTIVE`,
+`SECRET?` or `PARSE-ERRORS-INTRODUCED`, enforced in the bus adapter as well as the prompt. A bare Enter on
+the screen reviews file by file rather than approving everything.
+
 **The test-output parsers had no tests, and it showed.** `_parse_pytest` only read lines containing `=`,
 so it never parsed `pytest -q` — this project's own fallback test command — for a pass or a failure. It
 degraded exactly as designed (raw output instead of a one-liner), which is why nothing failed loudly.
@@ -133,10 +144,8 @@ graceful fallback hides the bug that triggers it; test the parser on the shape y
 inside a Python string in a heredoc into a real newline several separate times, producing unterminated string
 literals that ruff and mypy caught. The Write and Edit tools preserve escapes exactly.
 
-**Also outstanding:** (1) the rest of I3 — batch approval UI, and growing the task eval to 10 tasks. (2) **batch review** (§6.4) —
-needs a loop pre-pass that prepares every write in a multi-write step and one review screen;
-`cli/approval.batch_blockers` is already written and tested. (3) **The 9b half of the task eval** — now
-possible, since the GPU works. (4) I4 and Phase 3 are not started.
+**Also outstanding:** (1) the rest of I3 — growing the task eval to 10 tasks and running it at 4b and 9b. (2) **The 9b half of
+the task eval** — now possible, since the GPU works. (3) I4 and Phase 3 are not started.
 
 **The GPU works, after a fix worth remembering.** Ollama's device discovery was crashing
 (`0xc0000005`) on every backend because `llama-server.exe` loaded the old system
