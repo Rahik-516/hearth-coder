@@ -78,7 +78,7 @@ wrong for a branch switch, where it re-parsed all 400 byte-identical files. `ind
 detection to the given paths — scoping matters, since `detect_changes` derives deletions from "indexed
 but not scanned", so handing it the full index against a subset would delete everything else.
 
-**I3 is underway.** Plan mode has landed: `/plan <task>` investigates with read-only tools and returns
+**I3 (plan mode and workflows).** Plan mode has landed: `/plan <task>` investigates with read-only tools and returns
 a structured plan, `/execute` switches to agent mode and carries it out. The turn is deliberately **two
 requests** — an ordinary agent loop with no `format` set, then an extraction that asks for the schema
 with the tools removed. A schema present while the model is still searching pulls it towards answering
@@ -144,8 +144,13 @@ graceful fallback hides the bug that triggers it; test the parser on the shape y
 inside a Python string in a heredoc into a real newline several separate times, producing unterminated string
 literals that ruff and mypy caught. The Write and Edit tools preserve escapes exactly.
 
-**Also outstanding:** (1) the rest of I3 — growing the task eval to 10 tasks and running it at 4b and 9b. (2) **The 9b half of
-the task eval** — now possible, since the GPU works. (3) I4 and Phase 3 are not started.
+**I3 is code-complete, and the ten-task eval scores 8/10 on `qwen3.5:4b`** (bar was 25 %; see
+[docs/benchmarks/i3-task-eval.md](docs/benchmarks/i3-task-eval.md)). It is one run, on the plain agent loop
+rather than plan mode, and a pass means the working tree is right — not that the model verified it.
+
+**Also outstanding:** (1) the **9b half** of the eval — `qwen3.5:9b` is not installed (`ollama pull`, several
+GB) — and a **plan-mode variant** of the harness, since the roadmap's target is stated "with plan mode
+enabled". (2) Repeat runs to put a spread on the 4b number. (3) I4 and Phase 3 are not started.
 
 **The GPU works, after a fix worth remembering.** Ollama's device discovery was crashing
 (`0xc0000005`) on every backend because `llama-server.exe` loaded the old system
